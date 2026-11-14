@@ -124,17 +124,19 @@ class Node:
 
 def read_tree(path, name=''):
     st = os.lstat(path)
-    if stat.S_ISDIR(st.st_mode):
-        node = Node(name, st.st_mode)
+    # Strip group and other write bits (0o022) so launchd doesn't reject plists/binaries
+    clean_mode = st.st_mode & ~0o022
+    if stat.S_ISDIR(clean_mode):
+        node = Node(name, clean_mode)
         for entry in sorted(os.listdir(path)):
             child = read_tree(os.path.join(path, entry), entry)
             if child is not None:
                 node.children[entry] = child
         return node
-    if stat.S_ISREG(st.st_mode):
-        return Node(name, st.st_mode, source=path)
-    if stat.S_ISLNK(st.st_mode):
-        return Node(name, st.st_mode, target=os.fsencode(os.readlink(path)))
+    if stat.S_ISREG(clean_mode):
+        return Node(name, clean_mode, source=path)
+    if stat.S_ISLNK(clean_mode):
+        return Node(name, clean_mode, target=os.fsencode(os.readlink(path)))
     return None                         # device nodes, FIFOs, sockets: /dev is devfs
 
 

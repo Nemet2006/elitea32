@@ -1,6 +1,6 @@
 /*
- * The SCP of the Infinix Hot 20's MT6768: the Cortex-M co-processor ("tinysys") whose firmware is the
- * sensor hub -- the accelerometer, gyroscope, light and proximity sensors are behind it, not on an
+ * The SCP of the Samsung Galaxy A32 4G's MT6769T: the Cortex-M co-processor ("tinysys") whose firmware
+ * is the sensor hub -- the accelerometer, gyroscope, light and proximity sensors are behind it, not on an
  * I2C bus of the application processor (docs/sensors-x6826b.md, run 276). Step 1, reading only:
  * whether it runs when XNU starts. Android's kernel does not load its firmware (no request_firmware
  * in drivers/misc/mediatek/scp/v01/scp_helper.c of MiCode/Xiaomi_Kernel_OpenSource merlin-r-oss): LK
@@ -310,6 +310,21 @@ scp_bring_up(uint32_t step)
 		    "backup %#x", rd(sram, 0), rd(sram, 4), rd(sram, 0x800), rd(sram, 0x804), info[0], info[1], info[2], info[3],
 		    info[4], info[5], info[6]);
 		/*
+		 * LK fills the loader and firmware parts of the region info but not the SCP's DRAM size: on
+		 * Android the kernel does that (scp_helper.c sets ap_dram_size from the reserved memory it
+		 * maps). The A32's SCP-reserved region is 0x9f900000..0x9ff00000 (6 MB); the firmware's DRAM
+		 * starts at 0x9f980000, so give it everything up to the end of that region. Without a size the
+		 * start check below refuses 0xffffffff and the SCP never runs.
+		 */
+		if (info[4] != 0 && (info[5] == 0 || info[5] == 0xffffffffu)) {
+			uint32_t size = 0x9ff00000u - info[4];
+
+			info[5] = size;
+			*(volatile uint32_t *)(sram + SCP_REGION_INFO_OFFSET + 4 * 5) = size;
+			__asm__ volatile ("dsb sy" ::: "memory");
+			redwood_keep("scp: step 1: DRAM size was unset; wrote %#x+%#x", info[4], size);
+		}
+		/*
 		 * Step 2 (scp_step=2): let it run, as Android's kernel does at the end of its probe -- one
 		 * write of 1 to cfg+0 -- when LK has put a firmware there (its region info says where) and the
 		 * DRAM it will use lies below XNU's (0xc0000000 up: mtkloader.c, XNU_PHYS_BASE; run 278: the
@@ -481,10 +496,14 @@ accel_sample(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int
 	char text[64] = "none";
 
 	if (scp_fifo != 0) {
-		uint32_t wp = ((volatile uint32_t *)scp_fifo)[1], at = 16 + (wp >= 44 ? wp - 44 : 0);
+		uint32_t wp = ((volatile uint32_t *)scp_fifo)[1];
 
-		snprintf(text, sizeof(text), "%d %d %d %u", *(volatile int32_t *)(scp_fifo + at + 12),
-		    *(volatile int32_t *)(scp_fifo + at + 16), *(volatile int32_t *)(scp_fifo + at + 20), wp / 44);
+		if (wp >= 44) {
+			uint32_t at = 16 + wp - 44;
+
+			snprintf(text, sizeof(text), "%d %d %d %u", *(volatile int32_t *)(scp_fifo + at + 12),
+			    *(volatile int32_t *)(scp_fifo + at + 16), *(volatile int32_t *)(scp_fifo + at + 20), wp / 44);
+		}
 	}
 	return SYSCTL_OUT(req, text, strlen(text) + 1);
 }
@@ -493,10 +512,8 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, accel, CTLTYPE_STRING | CTLFLAG_RD | CTLFLA
     accel_sample, "A", "");
 
 /*
- * kern.redwood.orientation_state: where backboardd's orientation feed is (userland/src/inject.c,
- * orientation_start), written by it, read by a job: bits 0-7 the orientation last sent, bit 8 its
- * class found, 9 the manager caught, 10 the update method's type right, 11 the timer running, 16
- * and up the timer's seconds.
+ * kern.redwood.orientation_state: for a user-space orientation feed (not written yet): where it
+ * would keep the orientation last sent and the state of its hooks.
  */
 static int orientation_state;
 SYSCTL_INT(_kern_redwood, OID_AUTO, orientation_state, CTLFLAG_RW | CTLFLAG_LOCKED | CTLFLAG_ANYBODY, &orientation_state, 0, "");

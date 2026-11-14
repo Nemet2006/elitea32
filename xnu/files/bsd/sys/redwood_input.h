@@ -138,4 +138,8 @@ void redwood_gpu_report(const char *why);
 void redwood_gpu_stop(void);
 #endif
 
+void redwood_fts_init(void);
+void redwood_mtkcpufreq_init(void);
+void redwood_mtkbattery_init(void);
+
 #endif /* _SYS_REDWOOD_INPUT_H_ */

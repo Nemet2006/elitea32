@@ -217,10 +217,13 @@ redwood_input_init(void)
 	redwood_cpufreq_init();
 	redwood_virtio_input_init();
 	redwood_goodix_init();
+	redwood_fts_init();
 	redwood_tcm_init();
 	redwood_buttons_init();
 	redwood_mtkkeys_init();
+	redwood_mtkcpufreq_init();
 	redwood_battery_init();
+	redwood_mtkbattery_init();
 	redwood_ufs_init();
 	redwood_net_init();
 	redwood_adreno_init();

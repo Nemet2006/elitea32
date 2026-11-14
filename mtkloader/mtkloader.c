@@ -1,6 +1,6 @@
 /*
- * mtkloader: boots XNU on the Infinix Hot 20 (X6826B, MT6768) from boot_a, and brings Android
- * back afterwards with XNU's log in pstore.
+ * mtkloader: boots XNU on the Samsung Galaxy A32 4G (SM-A325F, MT6769T) from boot, and brings
+ * Android back afterwards with XNU's log in pstore.
  *
  * The boot image's kernel (tools/chainboot.py) is this program, then Android's own kernel Image
  * at CHAIN_OFFSET, then the XNU payload ("XNUP": kernel, ramdisk). Each boot, by the marker:
@@ -24,17 +24,18 @@
 #include "mtkdbg.h"
 #include "msdc.h"
 #include "mtkspi.h"
+#include "mtkpwrap.h"
 #include "tcm.h"
 #include "../xnuloader/identity.h"
 
-/* XNU's view of memory: one contiguous range that nothing else (LK, Android, TEE, ATF, the
- * framebuffer) uses; 0xc0000000-0xfe000000 is free DRAM on this board. */
-#define XNU_PHYS_BASE       0xc0000000ULL
-#define XNU_MEM_SIZE        0xfe000000ULL       /* up to dramc-rk1 at 0x1bffff000; room for the system image */
+/* XNU's view of memory: the A32's largest free run, 0xd1600000-0x13ffefff (1.73 GiB), between
+ * the RKP/KASLR reserves at 0xd0000000 and dramc-rk1 at 0x13ffff000. */
+#define XNU_PHYS_BASE       0xd1600000ULL
+#define XNU_MEM_SIZE        0x6e9ff000ULL
 /* Where the system image is put, clear of the kernel, as xnuloader does it (RESIDENT_RD_OFFSET). */
 #define SYSTEM_PA           (XNU_PHYS_BASE + 0x08000000ULL)
 #define SYSTEM_PART         "xnusys"
-/* 0: all of it. Smaller is for trying the path out: a half image will not mount. */
+/* 0: all of it. Smaller is for trying the path out: packfs will not mount a half image. */
 #ifndef SYSTEM_MAX_MB
 #define SYSTEM_MAX_MB       0
 #endif
@@ -86,13 +87,17 @@ static const uint8_t core_order[8] = { 0, 7, 6, 1, 2, 3, 4, 5 };
 #ifndef TOUCH_PROBE
 #define TOUCH_PROBE         0
 #endif
+/*
+ * 1: bring up the Infinix's OmniVision TD4160 over SPI2 before XNU. The A32's touch is an
+ * STMicroelectronics FTS on I2C6, which this TCM code cannot talk to; leave it alone until
+ * there is an FTS path.
+ */
+#ifndef A32_TCM_TOUCH
+#define A32_TCM_TOUCH       0
+#endif
 /* 1: wake the GPU and ask it what it is, if Android asked for it (tools/gpu-probe.sh); then Android. */
 #ifndef GPU_PROBE
 #define GPU_PROBE           0
-#endif
-/* 1: read the camera's pins, rails and I2C controller and report, if Android asked for it (tools/cam-probe.sh); then Android. */
-#ifndef CAM_PROBE
-#define CAM_PROBE           0
 #endif
 /* 1: read the eMMC and report, then go back to Android (no XNU). */
 #ifndef MSDC_TEST
@@ -114,13 +119,12 @@ static const uint8_t core_order[8] = { 0, 7, 6, 1, 2, 3, 4, 5 };
 #define XNU_VERBOSE         0
 #endif
 /* More for the kernel's command line: cores, the clock (epoch=), whatever a run wants to try. */
-#ifndef XNU_EXTRA_ARGS
-#define XNU_EXTRA_ARGS      "cpus=1"
-#endif
-/* The serial number iOS is told (the device tree's serial-number): a placeholder, not any real device's.
- * A real build sets its own with -DXNU_SERIAL=..., which is never committed. */
+/* The serial number iOS is told (the device tree's serial-number): a placeholder, not any real device's. */
 #ifndef XNU_SERIAL
 #define XNU_SERIAL          "HAKIOS0000000000"
+#endif
+#ifndef XNU_EXTRA_ARGS
+#define XNU_EXTRA_ARGS      "cpus=1"
 #endif
 /*
  * 1: the system image stays on the eMMC and the kernel reads it as it needs it (emmc_root=1,
@@ -145,8 +149,9 @@ static const uint8_t core_order[8] = { 0, 7, 6, 1, 2, 3, 4, 5 };
 #define KERNEL_PA           0x40080000ULL
 #define CHAIN_STUB_PA       0x4a000000ULL
 
-/* Run state, kept in DRAM across the watchdog reset (three copies: a bit may flip). */
-#define MARKER_PA           0x80000000ULL
+/* Run state, kept in DRAM across the watchdog reset (three copies: a bit may flip). The
+ * minirdump reserve (0x4d0f0000, 64 KiB) is not touched by Android or LK after boot. */
+#define MARKER_PA           0x4d0f0000ULL
 #define MARK_RUNNING        0x4e52584eu /* "NXRN" */
 #define MARK_DONE           0x4e44584eu /* "NXDN" */
 
@@ -235,8 +240,7 @@ struct xnu_syms {
 	uint64_t stub_slot, vc_colors, log, log_len, log_ring_at, log_wrapped, panic_str, panic_args, iso_font,
 	    msgbufp, cpu_ttep, live, uart_tx_ready, uart_tx_data, uart_rx_ready, uart_putc, uart_putc_options, log_putc,
 	    nprocs, tasks_count, initproc, gic_cpu_init,
-	    gic_unhandled_count, gic_last_unhandled, gic_active_iar, host_keep, host_keep_len, host_keep_dropped,
-	    hk_keep, hk_keep_len, hk_keep_dropped;
+	    gic_unhandled_count, gic_last_unhandled, gic_active_iar;
 };
 
 static struct xnu_syms xsyms; /* of the kernel that was started; kept for when it comes back */
@@ -401,10 +405,130 @@ static uint32_t marker_get(void)
 	return (a == b || a == c) ? a : (b == c ? b : 0);
 }
 
+/* The GCE as LK left it: which thread is running, its packet and wait token. */
+static void gce_dump(void)
+{
+	out("GCE gctl ");
+	out_hex(rd32(0x10238048));
+	out(" dbg ");
+	out_hex(rd32(0x10239104));
+	out("..");
+	out_hex(rd32(0x10239108));
+	out("\n");
+	for (uint32_t i = 0; i < 16; i++) {
+		uint64_t b = 0x10238000 + 0x100 + 0x80 * i;
+		uint32_t en = rd32(b + 0x04), sus = rd32(b + 0x08), st = rd32(b + 0x0c);
+		uint32_t cur = rd32(b + 0x20), end = rd32(b + 0x24);
+		uint32_t cnt = rd32(b + 0x28), wait = rd32(b + 0x30);
+
+		if (!(en | sus | st | cur | end | cnt | wait)) {
+			continue;
+		}
+		out("GCE t");
+		out_dec(i);
+		out(" en ");
+		out_hex(en);
+		out(" sus ");
+		out_hex(sus);
+		out(" st ");
+		out_hex(st);
+		out(" cur ");
+		out_hex(cur);
+		out(" end ");
+		out_hex(end);
+		out(" cnt ");
+		out_hex(cnt);
+		out(" wait ");
+		out_hex(wait);
+		out("\n");
+		if (cur && cur != 0xffffffffu) {
+			out("GCE t");
+			out_dec(i);
+			out(" pkt");
+			for (uint32_t k = 0; k < 32; k++) {
+				out(" ");
+				out_hex(rd32((uint64_t)cur + 4 * k));
+			}
+			out("\n");
+		}
+	}
+}
+
 /* ---- the display ---- */
 
 static uint64_t fb_base;
 static uint32_t fb_pitch;
+
+/* The display registers as LK left them: what the frame path is wired to. */
+static void display_dump(void)
+{
+	out("disp: OVL0 con ");
+	out_hex(rd32(0x1400b000 + 0x30));
+	out(" src ");
+	out_hex(rd32(0x1400b000 + 0x2c));
+	out(" pitch ");
+	out_hex(rd32(0x1400b000 + 0x44));
+	out(" addr ");
+	out_hex(rd32(0x1400b000 + 0xf40));
+	out("\ndisp: MUTEX en ");
+	out_hex(rd32(0x14001020));
+	out(" sof ");
+	out_hex(rd32(0x1400102c));
+	out(" mod0 ");
+	out_hex(rd32(0x14001030));
+	out(" cfgf0 ");
+	out_hex(rd32(0x140000f0));
+	out("\ndisp: RDMA con ");
+	out_hex(rd32(0x1400d010));
+	out(" size0 ");
+	out_hex(rd32(0x1400d014));
+	out(" size1 ");
+	out_hex(rd32(0x1400d018));
+	out(" memcon ");
+	out_hex(rd32(0x1400d024));
+	out(" addr ");
+	out_hex(rd32(0x1400d0f00));
+	out(" pitch ");
+	out_hex(rd32(0x1400d02c));
+	out("\ndisp: DSI start ");
+	out_hex(rd32(0x14014000));
+	out(" intsta ");
+	out_hex(rd32(0x1401400c));
+	out(" cmdqsz ");
+	out_hex(rd32(0x14014060));
+	out(" conti ");
+	out_hex(rd32(0x14014090));
+	out(" cmdq0 ");
+	out_hex(rd32(0x14014200));
+	out("\n");
+}
+
+/* How much of the framebuffer is not black, and how much is white: is the UI there at all? */
+static void screen_stats(void)
+{
+	uint32_t samples = 0, nonblack = 0, white = 0;
+
+	for (uint32_t y = 0; y < PANEL_H; y += 16) {
+		const volatile uint32_t *row = (const volatile uint32_t *)(fb_base + (uint64_t)y * fb_pitch);
+		for (uint32_t x = 0; x < PANEL_W; x += 16) {
+			uint32_t p = row[x];
+			samples++;
+			if (p & 0x00ffffffu) {
+				nonblack++;
+			}
+			if ((p & 0x00ffffffu) > 0x00f0f0f0u) {
+				white++;
+			}
+		}
+	}
+	out("screen: samples ");
+	out_dec(samples);
+	out(" nonblack ");
+	out_dec(nonblack);
+	out(" white ");
+	out_dec(white);
+	out("\n");
+}
 
 /* LK's layer as OVL0 scans it, if it is where LK said; LK's values otherwise. */
 static void display_find(void)
@@ -438,8 +562,8 @@ static void display_alpha_off(void)
 	 */
 	uint32_t src = rd32(OVL0_BASE + OVL_SRC_CON);
 	wr32(OVL0_BASE + OVL_SRC_CON, src & 1u);
+	wr32(DISP_MUTEX_MOD0, 0x90380u);        /* OVL0(7)|OVL0_2L(8)|RDMA0(9)|DSI0(16)|PWM0(19) */
 	wr32(DISP_MUTEX_EN, 1);
-	wr32(DISP_MUTEX_RUN, 1);
 	out(", SRC_CON ");
 	out_hex(src);
 	out(" -> ");
@@ -498,9 +622,6 @@ static void find_syms(const uint8_t *kernel, struct xnu_syms *s)
 		"_vmapple_uart_receive_ready", "_uart_putc", "_uart_putc_options", "_loader_log_putc",
 		"_nprocs", "_tasks_count", "_initproc", "_gic_v3_irq_cpu_init",
 		"_gic_unhandled_count", "_gic_last_unhandled", "_gic_active_iar",
-		"_redwood_host_keep", "_redwood_host_keep_len", "_redwood_host_keep_dropped",
-		/* (the same in a kernel of the common tree, hakios-xnu-kernel's mtk/mt6768/drivers/gpu/hakios.mali.c) */
-		"_hakios_host_keep", "_hakios_host_keep_len", "_hakios_host_keep_dropped",
 	};
 	_Static_assert(sizeof(struct xnu_syms) == sizeof(names), "every field needs its name, in order");
 	uint64_t *slots = (uint64_t *)s;
@@ -521,7 +642,7 @@ static void find_syms(const uint8_t *kernel, struct xnu_syms *s)
 	const char *strs = (const char *)(kernel + st->stroff);
 	for (uint32_t i = 0; i < st->nsyms; i++) {
 		const char *n = strs + sym[i].n_strx;
-		if (n[0] != '_' || (n[1] != 'l' && n[1] != 'v' && n[1] != 'd' && n[1] != 'i' && n[1] != 'm' && n[1] != 'c' && n[1] != 'g' && n[1] != 'n' && n[1] != 't' && n[1] != 'r' && n[1] != 'h')) {
+		if (n[0] != '_' || (n[1] != 'l' && n[1] != 'v' && n[1] != 'd' && n[1] != 'i' && n[1] != 'm' && n[1] != 'c' && n[1] != 'g' && n[1] != 'n' && n[1] != 't')) {
 			continue;
 		}
 		for (unsigned k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
@@ -541,9 +662,9 @@ static uint64_t kva_to_pa(uint64_t va)
 /* ---- the system image, on the flash ---- */
 
 /*
- * userland/system.apfs is the root XNU mounts (md0), 2.6 GB of it: too large for a boot image,
+ * userland/system.packfs is the root XNU mounts (md0), 2.8 GB of it: too large for a boot image,
  * so it lives in its own partition (tools/gpt-carve.py made "xnusys" out of the end of userdata)
- * and is read into DRAM here. The payload's small root.apfs stays the second disk (md1).
+ * and is read into DRAM here. The payload's small root.packfs stays the second disk (md1).
  */
 static uint8_t gpt_entries[128 * 128] __attribute__((aligned(16)));
 static uint8_t sector_buf[512] __attribute__((aligned(16)));
@@ -571,7 +692,7 @@ static int gpt_find(const char *name, uint64_t *lba, uint64_t *blocks)
 		const uint8_t *e = gpt_entries + i * size;
 		int same = 1;
 
-		for (int k = 0; same && name[k] != 0; k++) {
+		for (int k = 0; same && name[k - (k ? 0 : 0)] != 0; k++) {
 			same = e[56 + 2 * k] == (uint8_t)name[k] && e[57 + 2 * k] == 0;
 		}
 		if (same && e[56 + 2 * (int)strlen(name)] == 0) {
@@ -834,7 +955,7 @@ static uint32_t build_device_tree(uint64_t dt_pa, uint64_t rd_pa, uint64_t rd_si
 	dt_prop_u32(&w, "#size-cells", 2);
 
 	dt_begin(&w, "chosen");
-	dt_prop_str(&w, "darwin-board", "x6826b");
+	dt_prop_str(&w, "darwin-board", "a32");
 	dt_prop(&w, "random-seed", seed, sizeof(seed));
 	dt_prop_u64(&w, "dram-base", XNU_PHYS_BASE);
 	dt_prop_u64(&w, "dram-size", XNU_MEM_SIZE);
@@ -932,7 +1053,7 @@ static uint32_t build_device_tree(uint64_t dt_pa, uint64_t rd_pa, uint64_t rd_si
 	dt_end(&w);
 
 	dt_begin(&w, "arm-io");
-	dt_prop_str(&w, "device_type", "x6826b");
+	dt_prop_str(&w, "device_type", "a32");
 	uint64_t ranges[3] = { 0, 0x0c000000, 0x14000000 };
 	dt_prop(&w, "ranges", ranges, sizeof(ranges));
 	dt_prop_u32(&w, "#address-cells", 2);
@@ -1055,62 +1176,6 @@ static void save_log(const struct span *sp, int nsp)
 	fbc.base = fb;
 }
 
-/*
- * The kernel's lines for the host (kern.redwood.host_keep, bsd/dev/redwood_mali.c) into ramoops' pmsg
- * zone, whole: Android shows them as /sys/fs/pstore/pmsg-ramoops-0, and tools/xnu-cycle.sh appends them
- * to the run's log. Called on each way back from XNU, after the boot request in that zone was taken.
- */
-static void save_host_keep(const struct xnu_syms *s)
-{
-	static const char head[] = "=== kept for the host by the kernel: ";
-	volatile struct ramoops_hdr *h = (volatile struct ramoops_hdr *)RAMOOPS_PMSG;
-	volatile char *d = (volatile char *)(RAMOOPS_PMSG + sizeof(struct ramoops_hdr));
-	uint32_t cap = RAMOOPS_PMSG_SIZE - sizeof(struct ramoops_hdr), at = 0, len, dropped;
-	char num[12];
-	int n;
-
-	uint64_t keep_va = s->host_keep ? s->host_keep : s->hk_keep;
-	uint64_t len_va = s->host_keep ? s->host_keep_len : s->hk_keep_len;
-	uint64_t dropped_va = s->host_keep ? s->host_keep_dropped : s->hk_keep_dropped;
-
-	if (!keep_va || !len_va) {
-		return;
-	}
-	len = rd32(kva_to_pa(len_va));
-	dropped = dropped_va ? rd32(kva_to_pa(dropped_va)) : 0;
-	for (const char *c = head; *c; c++) {
-		d[at++] = *c;
-	}
-	for (int part = 0; part < 2; part++) {
-		uint32_t v = part ? dropped : len;
-		n = 0;
-		do {
-			num[n++] = (char)('0' + v % 10);
-			v /= 10;
-		} while (v);
-		while (n) {
-			d[at++] = num[--n];
-		}
-		const char *tail = part ? " dropped) ===\n" : " bytes (";
-		for (const char *c = tail; *c; c++) {
-			d[at++] = *c;
-		}
-	}
-	const volatile char *keep = (const volatile char *)kva_to_pa(keep_va);
-	for (uint32_t i = 0; i < len && at < cap; i++) {
-		d[at++] = keep[i];
-	}
-	h->sig = RAMOOPS_SIG;
-	h->start = at;          /* not wrapped: Linux takes data[start..size) then data[0..start) */
-	h->size = at;
-	dcache_clean_range(RAMOOPS_PMSG, RAMOOPS_PMSG_SIZE);
-	out("host_keep: ");
-	out_dec(len);
-	out(" bytes into pmsg, ");
-	out_dec(dropped);
-	out(" lines dropped\n");
-}
-
 /* The last lines of what is in ramoops, on the lower part of the screen. */
 static void show_log_tail(uint32_t lines)
 {
@@ -1140,6 +1205,9 @@ static void show_log_tail(uint32_t lines)
  */
 static uint64_t xnu_va_to_pa(uint64_t va)
 {
+	if (va >= KERNEL_VIRT_BASE && va < KERNEL_VIRT_BASE + XNU_MEM_SIZE) {
+		return kva_to_pa(va);
+	}
 	uint64_t tcr = xnu_fp[2], ttbr1 = xnu_fp[3];
 	uint32_t t1sz = (tcr >> 16) & 0x3f, tg1 = (tcr >> 30) & 3;
 	uint32_t g = tg1 == 2 ? 12 : tg1 == 1 ? 14 : 0;
@@ -1150,6 +1218,9 @@ static uint64_t xnu_va_to_pa(uint64_t va)
 	uint32_t levels = (vabits - g + per - 1) / per;
 	uint64_t table = ttbr1 & 0x0000fffffffffffeULL & ~((1ULL << g) - 1);
 	for (uint32_t l = 0; l < levels; l++) {
+		if (table < 0x40000000ULL || table >= 0x140000000ULL) {
+			return 0;
+		}
 		uint32_t shift = g + per * (levels - 1 - l);
 		uint64_t idx = (va >> shift) & ((1ULL << per) - 1);
 		if (l == 0) {
@@ -1159,7 +1230,7 @@ static uint64_t xnu_va_to_pa(uint64_t va)
 		if (!(d & 1)) {
 			return 0;
 		}
-		uint64_t oa = d & 0x0000ffffffffffffULL & ~((1ULL << g) - 1);
+		uint64_t oa = d & 0x00000001ffffffffULL & ~((1ULL << g) - 1);
 		if (l == levels - 1 || !(d & 2)) { /* page, or block */
 			uint64_t span = 1ULL << shift;
 			return (oa & ~(span - 1)) | (va & (span - 1));
@@ -1211,7 +1282,13 @@ static uint64_t va_next(struct xnu_va_list *ap)
 /* The panic message: debugger_panic_str formatted with debugger_panic_args (integers in hex). */
 static void show_panic_string(const struct xnu_syms *x)
 {
-	uint64_t fmt = x->panic_str ? xnu_rd64(x->panic_str) : 0;
+	uint64_t fmt = 0;
+	if (x->panic_str) {
+		uint64_t pa = kva_to_pa(x->panic_str);
+		if (pa >= 0x40000000ULL && pa < 0x140000000ULL) {
+			fmt = *(volatile uint64_t *)pa;
+		}
+	}
 	uint64_t argp = x->panic_args ? xnu_rd64(x->panic_args) : 0;
 	struct xnu_va_list ap = { 0 };
 
@@ -1485,7 +1562,9 @@ void xnu_returned(uint64_t log_pa, uint64_t len, uint64_t reason, uint64_t code,
 	}
 	save_log(&sp, 1);
 	dbg_puts("=== end of XNU log ===\n");
-	save_host_keep(&xsyms);
+	out("post-XNU display:\n");
+	screen_stats();
+	display_dump();
 	show_log_tail(40);
 	dbg_delay_ms(20000);
 	reset_board();
@@ -1588,11 +1667,13 @@ static void rescue_log(void)
 	}
 	xsyms = s;
 	xkernel = pi.kernel;
-	rescue_state();
 	dbg_puts("=== XNU log (from DRAM; a few bits may have flipped in the reset) ===\n");
 	save_log(sp, n);
 	dbg_puts("=== end of XNU log ===\n");
-	save_host_keep(&s);
+	rescue_state();
+	out("post-XNU display:\n");
+	screen_stats();
+	display_dump();
 	show_log_tail(40);
 }
 
@@ -1748,6 +1829,27 @@ static void plog_flush(void)
  * XNU never came back (no timer, a hang): with its caches visible through our own cacheable
  * mapping, take what it shows and has written, put it into ramoops and reset the board.
  */
+/*
+ * The watcher's own frame trigger. XNU's MMIO writes to the display block do not stick, but this
+ * core has its own identity mapping and is not the core XNU runs on: write the mutex, the mmsys
+ * path bit and the DSI command that starts a command-mode frame, every 16 ms.
+ */
+static void watcher_display_kick(void)
+{
+	if (rd32(0x1401400c) & 0x80000000u) {   /* DSI_BUSY: the previous frame is still going out */
+		return;
+	}
+	wr32(DISP_MUTEX_MOD0, 0x90380u);        /* OVL0|OVL0_2L|RDMA0|DSI0|PWM0 */
+	wr32(DISP_MUTEX_SOF, 0);
+	wr32(DISP_MUTEX_EN, 1);
+	wr32(0x140000f0, rd32(0x140000f0) | 1u); /* mtk_dsi_config_trigger's mmsys bit */
+	wr32(0x14014200, 0x002c3909u);           /* DSI_CMDQ0: 0x2C write_memory_start */
+	wr32(0x14014060, 1);                     /* DSI_CMDQ_SIZE */
+	wr32(0x14014000, 0);                     /* DSI_START */
+	wr32(0x14014000, 1);
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
 void watcher_main(void)
 {
 	for (int i = 0; i < 512; i++) {
@@ -1764,6 +1866,22 @@ void watcher_main(void)
 	watcher_started = 1;
 	dcache_clean_range((uint64_t)&watcher_started, 8);
 
+#if !XNU_WATCH_SECONDS
+	for (;;) {
+		dcache_clean_range((uint64_t)&xnu_back, 8);
+		if (xnu_back) {
+			for (;;) {
+				__asm__ volatile("wfe");
+			}
+		}
+#ifndef WATCHER_NO_KICK
+		watcher_display_kick();
+		dbg_delay_ms(16);
+#else
+		dbg_delay_ms(16);
+#endif
+	}
+#else
 	uint64_t end = dbg_ticks() + dbg_freq() * XNU_WATCH_SECONDS;
 	while (dbg_ticks() < end) {
 		dcache_clean_range((uint64_t)&xnu_back, 8);
@@ -1772,8 +1890,16 @@ void watcher_main(void)
 				__asm__ volatile("wfe");
 			}
 		}
-		dbg_delay_ms(100);
+#ifndef WATCHER_NO_KICK
+		watcher_display_kick();
+		dbg_delay_ms(16);
+#else
+		/* The kernel's presenter draws the frame, waits for the DSI to be idle and kicks it
+		 * itself (mtk_kick=1): the watcher only watches and returns. */
+		dbg_delay_ms(16);
+#endif
 	}
+#endif
 	dcache_clean_range((uint64_t)&xnu_back, 8);
 	if (xnu_back) {
 		for (;;) {
@@ -1911,7 +2037,6 @@ void watcher_main(void)
 		dbg_puts("--- loader_log (head) ---\n");
 		save_log(&sp, 1);
 	}
-	save_host_keep(&xsyms);
 	dbg_puts("=== end of watcher snapshot ===\n");
 	plog_flush();
 	psci_system_reset();
@@ -1920,9 +2045,6 @@ void watcher_main(void)
 
 static void watcher_start(void)
 {
-	if (!XNU_WATCH_SECONDS) {
-		return;
-	}
 	watcher_started = 0;
 	int64_t r = psci_cpu_on((uint64_t)WATCH_CORE << 8, (uint64_t)watcher_entry, 0);
 	out("watcher on cpu");
@@ -2311,8 +2433,8 @@ static void __attribute__((noreturn)) run_xnu(void)
 
 	out("md0 ");
 	out_hex(sys_size ? sys_pa : rd_pa);
-	out(sys_size ? " (the system image), md1 " : XNU_ROOT_EMMC ? " is none: md1 (root.apfs), the system image on the eMMC" :
-	    " (root.apfs only)");
+	out(sys_size ? " (the system image), md1 " : XNU_ROOT_EMMC ? " is none: md1 (root.packfs), the system image on the eMMC" :
+	    " (root.packfs only)");
 	if (sys_size) {
 		out_hex(rd_pa);
 	}
@@ -2327,17 +2449,19 @@ static void __attribute__((noreturn)) run_xnu(void)
 	out("\n");
 	display_alpha_off();
 
+#if XNU_WATCH_SECONDS
+	marker_set(MARK_RUNNING);
+#else
+	marker_set(0);
+#endif
 	if (XNU_WDT_SECONDS) {
 		uint32_t t = XNU_WDT_SECONDS > 31 ? 31 : XNU_WDT_SECONDS;
-		marker_set(MARK_RUNNING);
 		wr32(TOPRGU_LENGTH, ((t * 32768u / 512u) << 5) | 0x8u);
 		wr32(TOPRGU_RESTART, TOPRGU_RESTART_KEY);
 		wr32(TOPRGU_MODE, TOPRGU_MODE_KEY | 0x1u);
 		out("watchdog: back to Android in ");
 		out_dec(t);
 		out(" s\n");
-	} else {
-		marker_set(0);
 	}
 	/* The timers XNU will use: a virtual counter offset by EL2 (MediaTek's GenieZone) would
 	 * leave its deadlines forever in the future, and the kernel idle with nothing to wake it. */
@@ -2379,6 +2503,7 @@ static void __attribute__((noreturn)) run_xnu(void)
 	timer_probe();
 #endif
 	watcher_start();
+#if A32_TCM_TOUCH
 	/*
 	 * The touch screen, while there is still a console to complain to. The controller has to be
 	 * handed its firmware before anything can read a finger out of it, and the kernel is a bad
@@ -2386,6 +2511,7 @@ static void __attribute__((noreturn)) run_xnu(void)
 	 * up long after the chip has forgotten them.
 	 */
 	touch_bring_up();
+#endif
 	big_cores_clock();
 	/*
 	 * Nothing of ours is left on the panel: iOS paints only what it draws, and where it does not
@@ -2491,7 +2617,7 @@ static void msdc1_probe(void)
 static void msdc_self_test(void)
 {
 	static uint8_t buf[4096] __attribute__((aligned(16)));
-	const uint64_t boot_a_lba = 0xf5000; /* from LK's partition table */
+	const uint64_t boot_a_lba = 1162448; /* SM-A325F: boot is mmcblk0p36, 65536 blocks */
 	int ok;
 
 	/* a hang in here must not keep the phone: the watchdog brings Android back */
@@ -2973,6 +3099,8 @@ static void touch_hand_back(void)
  * (tools/boot-xnu.sh): ramoops keeps it in its pmsg zone across the reboot, where this finds it
  * and wipes it, so the boot after XNU is Android again.
  */
+#define RAMOOPS_PMSG       0x4d0e0000ULL
+#define RAMOOPS_PMSG_SIZE  0x10000u
 static const char boot_xnu_flag[] = "DARWIN-REDWOOD:BOOT-XNU";
 
 /*
@@ -2981,14 +3109,10 @@ static const char boot_xnu_flag[] = "DARWIN-REDWOOD:BOOT-XNU";
  */
 static int pmsg_take(const char *flag, uint32_t n)
 {
-	volatile struct ramoops_hdr *h = (volatile struct ramoops_hdr *)RAMOOPS_PMSG;
-	volatile char *d = (volatile char *)(RAMOOPS_PMSG + sizeof(struct ramoops_hdr));
-	uint32_t cap = RAMOOPS_PMSG_SIZE - sizeof(struct ramoops_hdr);
+	volatile char *d = (volatile char *)RAMOOPS_PMSG;
+	uint32_t cap = RAMOOPS_PMSG_SIZE;
 	int found = 0;
 
-	if (h->sig != RAMOOPS_SIG || h->size > cap) {
-		return 0;
-	}
 	for (uint32_t at = 0; at + n <= cap; at++) {
 		uint32_t k = 0;
 		while (k < n && d[at + k] == flag[k]) {
@@ -3015,14 +3139,14 @@ static int boot_choice(void)
 	uint64_t screen = fbc.base;
 
 	fbc.base = 0;
-	dbg_puts(xnu ? "boot: Darwin / XNU (requested)\n" : "boot: Android\n");
+	dbg_puts(xnu ? "boot: Darwin / XNU (permanent iOS)\n" : "boot: Android\n");
 	fbc.base = screen;
 	fb_rect(0, 600, PANEL_W, 160, 0xff000000u);
 	fbc.scale = 3;
 	fbc.x = 48;
 	fbc.y = 640;
 	fbc.fg = xnu ? 0xff40ff40u : 0xffffffffu;
-	for (const char *c = xnu ? "Booting Darwin / XNU" : "Booting Android"; *c; c++) {
+	for (const char *c = xnu ? "Booting HakiOS (iOS 16.5)" : "Booting Android"; *c; c++) {
 		fbcon_putc(*c);
 	}
 	fbc.scale = 1;
@@ -3369,23 +3493,22 @@ rails_off:
 }
 #endif /* GPU_PROBE */
 
-#if CAM_PROBE
-#include "mtkcam.h"
-
-static const char cam_probe_flag[] = "DARWIN-REDWOOD:CAM-PROBE";
-#endif /* CAM_PROBE */
-
 void mtkloader_main(uint64_t dtb)
 {
 	uint32_t mark = marker_get();
+	marker_set(0);
 
 	wdt_disable();
 	lk_dtb = dtb;
 	display_find();
 	fbcon_init(fb_base, fb_pitch, 0, 1);
 
+#if XNU_WATCH_SECONDS
 	if (mark == MARK_DONE) {
-		/* XNU's log was saved when it came back; leave ramoops as it is. */
+		/* The watcher marks DONE after a snapshot; save that snapshot (and the display state)
+		 * before going back to Android. An orderly XNU return may have saved it already. */
+		rescue_log();
+		dbg_delay_ms(5000);
 		chain_android();
 	}
 	if (mark == MARK_RUNNING) {
@@ -3393,8 +3516,11 @@ void mtkloader_main(uint64_t dtb)
 		dbg_delay_ms(5000);
 		chain_android();
 	}
+#endif
 
 	plog_reset();
+	out("== mtkloader A32 v1: relocated and running ==\n");
+	display_dump();
 #if TOUCH_PROBE
 	fb_rect(0, 0, PANEL_W, PANEL_H, 0xff000000u);
 	fbc.x = 0;
@@ -3411,17 +3537,6 @@ void mtkloader_main(uint64_t dtb)
 		fbc.y = fbc.top = 0;
 		out("== mtkloader: GPU probe ==\n");
 		gpu_probe();
-		dbg_delay_ms(4000);
-	}
-	chain_android();
-#endif
-#if CAM_PROBE
-	if (pmsg_take(cam_probe_flag, sizeof(cam_probe_flag) - 1)) {
-		fb_rect(0, 0, PANEL_W, PANEL_H, 0xff000000u);
-		fbc.x = 0;
-		fbc.y = fbc.top = 0;
-		out("== mtkloader: CAM probe ==\n");
-		cam_probe();
 		dbg_delay_ms(4000);
 	}
 	chain_android();
@@ -3443,7 +3558,7 @@ void mtkloader_main(uint64_t dtb)
 	fbc.x = 0;
 	fbc.y = fbc.top = 0;
 	fbc.fg = 0xff40ff40u;
-	out("== mtkloader: Darwin/XNU on X6826B (MT6768) ==\n");
+	out("== mtkloader: Darwin/XNU on SM-A325F (MT6769T) ==\n");
 	fbc.fg = 0xffffffffu;
 	out("LK dtb ");
 	out_hex(dtb);

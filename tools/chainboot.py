@@ -70,11 +70,12 @@ def main():
     hdr[576:608] = pad(sha.digest(), 32)
 
     img = bytes(hdr) + pad(new_kernel, page) + pad(ramdisk, page) + pad(second, page) + pad(rdo, page) + pad(dtb, page)
-    # boot_a on the X6826B is 32 MB: an image any larger is refused by fastboot, and a script that
-    # sends fastboot's output nowhere would carry on as if it had been flashed
+    # The A32's boot partition is 32 MiB. Pad to it so a dd replaces the whole partition and its
+    # hash matches the file; an image any larger is refused.
     if len(img) > BOOT_PARTITION:
         raise SystemExit(f'{out}: {len(img)} bytes, more than the {BOOT_PARTITION} of the boot partition '
                          f'({len(img) - BOOT_PARTITION} too many): the payload has to shrink')
+    img += b'\0' * (BOOT_PARTITION - len(img))
     open(out, 'wb').write(img)
     print(f'{out}: {len(img)} bytes (program {len(prog)}, Image {len(image)}, payload {len(payload)}, kernel gz {len(new_kernel)})')
 

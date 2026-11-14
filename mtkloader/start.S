@@ -1,7 +1,8 @@
 /*
- * mtkloader entry. LK starts this as a Linux arm64 Image: at 0x40080000, MMU and caches off,
- * x0 = LK's device tree. All memory is device memory until XNU turns its MMU on, so the C code
- * is built without SIMD and with strict alignment (build.sh).
+ * mtkloader entry. Samsung's LK decompresses this where it likes and jumps to the first byte;
+ * entry_relocate copies the whole blob to the address the loader was linked for (0x40080000).
+ * MMU and caches are off, x0 = LK's device tree. All memory is device memory until XNU turns its
+ * MMU on, so the C code is built without SIMD and with strict alignment (build.sh).
  */
 .global _start
 .global jump_to_kernel
@@ -18,16 +19,104 @@
 
 _start:
     /* Linux ARM64 Image header (64 bytes); tools/chainboot.py fills image_size, res2, res3 */
-    b       primary_entry       /* code0 */
+    b       entry_relocate      /* code0 */
     .word   0                   /* code1 */
     .quad   0x80000             /* text_offset */
     .quad   0x02000000          /* image_size */
     .quad   0x0a                /* flags: little-endian, 4K pages, anywhere */
-    .quad   0                   /* res2: length of Android's Image (at CHAIN_OFFSET) */
-    .quad   0                   /* res3: offset of the XNU payload ("XNUP") from _start */
-    .quad   0                   /* res4 */
+    .quad   0                   /* res2: unused */
+    .quad   0                   /* res3: length of Android's Image (at CHAIN_OFFSET) */
+    .quad   0                   /* res4: offset of the XNU payload ("XNUP") from _start */
     .ascii  "ARM\x64"
     .word   0
+
+/*
+ * Samsung's LK does not use the address the Image was linked for: it decompresses the kernel
+ * wherever its allocator says and jumps to the first byte of the Image. So the loader must
+ * move itself to the address its symbols were linked for (0x40080000) before any C runs.
+ *
+ * LK still hands us its device tree in x0. Everything here is PC-relative until the jump.
+ */
+#define RELOC_STUB_PA 0x4a000000
+
+entry_relocate:
+    msr     daifset, #0xf
+    mov     x19, x0                 /* LK's device tree */
+
+    /* Put the copy loop where the copy cannot overwrite it. */
+    adr     x0, reloc_stub
+    ldr     x1, =RELOC_STUB_PA
+    ldr     x2, =reloc_stub_end - reloc_stub
+1:  ldr     x6, [x0], #8
+    str     x6, [x1], #8
+    subs    x2, x2, #8
+    b.hi    1b
+    dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
+
+    /*
+     * How much to move: the whole decompressed blob (loader + padding + Android's Image,
+     * plus the XNU payload when there is one). With no payload the exact blob is
+     * CHAIN_OFFSET + res2; with one, image_size covers it and is rounded up to 1 MiB.
+     */
+    adr     x20, _start             /* where LK actually put us */
+    ldr     x2, [x20, #0x10]        /* image_size */
+    ldr     x3, [x20, #0x28]        /* length of Android's Image */
+    add     x3, x3, #0x40000        /* CHAIN_OFFSET */
+    add     x3, x3, #7
+    and     x3, x3, #~7
+    ldr     x6, [x20, #0x30]        /* offset of the XNU payload, 0 when none */
+    cbnz    x6, 4f
+    mov     x2, x3
+    b       5f
+4:  cmp     x2, x3
+    csel    x2, x2, x3, hi
+5:
+
+    mov     x0, x20                 /* src */
+    ldr     x1, =0x40080000         /* dst: the address the loader was linked for */
+    ldr     x3, =primary_entry      /* entry once it is there */
+    mov     x4, x19                 /* LK's dtb */
+    ldr     x5, =RELOC_STUB_PA
+    br      x5
+
+/* Runs from RELOC_STUB_PA: no stack, no absolute symbol references. */
+.balign 16
+reloc_stub:
+    /* A 35 MiB copy with the MMU off takes long enough to trip LK's watchdog. */
+    ldr     x9, =0x10007000
+    ldr     w10, =0x1971
+    str     w10, [x9, #0x08]
+    ldr     w10, =0x22000000
+    str     w10, [x9, #0x00]
+    dsb     sy
+
+    cbz     x2, 3f
+    cmp     x0, x1
+    b.eq    3f
+    b.lo    2f                      /* src < dst: copy backwards */
+1:  ldr     x6, [x0], #8
+    str     x6, [x1], #8
+    subs    x2, x2, #8
+    b.hi    1b
+    b       3f
+2:  add     x0, x0, x2
+    add     x1, x1, x2
+1:  ldr     x6, [x0, #-8]!
+    str     x6, [x1, #-8]!
+    subs    x2, x2, #8
+    b.hi    1b
+3:  dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
+    mov     x0, x4                  /* LK's dtb */
+    br      x3
+    .ltorg
+.balign 8
+reloc_stub_end:
 
 primary_entry:
     msr     daifset, #0xf
@@ -43,9 +132,8 @@ primary_entry:
     b       20f
 10: msr     vbar_el1, x2
 20:
-    /* Stack just below the load address (0x40078000), BSS cleared */
-    adr     x0, _start
-    sub     x0, x0, #0x8000
+    /* Stack inside our own BSS: LK may have loaded us anywhere. */
+    ldr     x0, =__stack_top
     mov     sp, x0
     ldr     x0, =__bss_start
     ldr     x1, =__bss_end
@@ -143,8 +231,8 @@ xnu_return_stub:
     str     x10, [x9, #16]
     mrs     x10, ttbr1_el1
     str     x10, [x9, #24]
-    adr     x9, _start
-    sub     sp, x9, #0x8000
+    ldr     x9, =__stack_top
+    mov     sp, x9
     mov     x0, x19
     mov     x1, x20
     mov     x2, x21
@@ -213,8 +301,8 @@ watcher_entry:
     adrp    x9, mtk_vectors
     add     x9, x9, :lo12:mtk_vectors
     msr     vbar_el1, x9
-    adr     x9, _start
-    sub     sp, x9, #0x18000
+    ldr     x9, =__watch_stack_top
+    mov     sp, x9
     bl      watcher_main
 1:  wfe
     b       1b
@@ -320,8 +408,8 @@ fault_common:
 1:  mrs     x1, esr_el1
     mrs     x2, elr_el1
     mrs     x3, far_el1
-2:  adr     x5, _start
-    sub     sp, x5, #0x10000
+2:  ldr     x5, =__fault_stack_top
+    mov     sp, x5
     bl      loader_fault
 3:  wfe
     b       3b

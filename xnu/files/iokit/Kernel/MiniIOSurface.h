@@ -117,12 +117,12 @@ public:
 	task_t                          clientTask;     /* whose memory it is (not held: only compared) */
 	mach_vm_address_t               clientAddress;  /* ... and where it is there */
 	uint8_t *                       kpixels;        /* where the pixel memory starts in the kernel, either way */
-	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; RedwoodGPU.cpp) */
+	uint32_t                        drawn;          /* the GPU's last submission that names the pixels (0: none; redwood_gpu.cpp) */
+	uint64_t                        maliSeq;        /* the Mali job after which the pixels are drawn (0: none; redwood_mali.cpp) */
 	struct minisurf_result          info;           /* addresses not filled in */
 	struct minisurf_plane           planes[MINISURF_MAX_PLANES];
 	OSDictionary *                  values;
 	uint32_t                        useCount[2];
-	uint64_t                        maliSeq;        /* the last Mali job that draws into it (RedwoodMali) */
 	uint32_t                        purgeable;
 	bool                            traced;         /* made by a program of boot-arg surftrace_of: its ports are said too */
 
@@ -164,15 +164,11 @@ MiniIOSurface * MiniIOSurfaceCopy(uint32_t sid);
 void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t * freed, uint64_t * freeing, uint32_t * again);
 /* Clear the memory that is kept of surfaces that are gone, for the next ones: when the caller has a moment. */
 void            MiniIOSurfaceClearKept(void);
-/* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (RedwoodGPU.cpp). */
+/* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (redwood_gpu.cpp). */
+void            MiniIOSurfaceUse(MiniIOSurface * surface, int delta);
 bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
 MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
 void            MiniIOSurfaceDrop(MiniIOSurface * surface);
-/*
- * The surface counted in use (IOSurfaceIsInUse()) while a swap holds it, as the display holds one on
- * an iPhone: CoreAnimation does not draw the next frame into it before it is on the panel.
- */
-void            MiniIOSurfaceUse(MiniIOSurface * surface, int delta);
 /* A Mach send right for the surface in the task (what IOSurfaceCreateMachPort gives); 0 on failure. */
 mach_port_name_t MiniIOSurfaceMakeSendRight(task_t task, MiniIOSurface * surface);
 

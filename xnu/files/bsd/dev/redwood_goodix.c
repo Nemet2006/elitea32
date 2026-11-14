@@ -1505,7 +1505,8 @@ redwood_goodix_init(void)
 	uint32_t enabled = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || !enabled) {
+	/* touchscreen=1 is this driver; 3 is the A32's STM (bsd/dev/redwood_fts.c). */
+	if (!PE_parse_boot_argn("touchscreen", &enabled, sizeof(enabled)) || enabled != 1) {
 		return;
 	}
 	PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));

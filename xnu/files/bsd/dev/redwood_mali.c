@@ -1,7 +1,8 @@
 /*
- * The GPU of the Infinix Hot 20 (X6826B), a Mali-G52 MC2, brought up from the kernel. Only with
- * boot-arg mali=1: every address below belongs to this phone (the other phone's GPU is an Adreno,
- * bsd/dev/redwood_adreno.c).
+ * The GPU of the Samsung Galaxy A32 4G (SM-A325F), a Mali-G52 MC2, brought up from the kernel.
+ * Only with boot-arg mali=1: every address below belongs to this phone (the other phone's GPU is
+ * an Adreno, bsd/dev/redwood_adreno.c). Ported from the Infinix Hot 20's driver (MT6768, the same
+ * GPU block).
  *
  * A Bifrost Mali needs no firmware, so bringing it up is power and clocks and nothing else, in the
  * order MediaTek's own kernel uses -- the same sequence the loader's GPU probe proved on the phone
@@ -36,7 +37,7 @@ extern uint64_t kvtophys(vm_offset_t va);
 extern void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
 extern vm_offset_t phystokv(uint64_t pa);
 extern void RedwoodMaliStart(void);
-extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;   /* RedwoodMali.cpp */
+extern uint32_t gMaliClients, gMaliBuffers, gMaliSubmits, gMaliFailed, gMaliShown;   /* iokit/Kernel/redwood_mali.cpp */
 extern struct mali_made { uint64_t address, size; uint32_t asked, flags; } gMaliMade[32];
 
 #define TOPCKGEN_PHYS   0x10000000
@@ -74,6 +75,31 @@ static char kept_lines[KEPT_LINES][200];
 static uint32_t kept_next;
 static LCK_GRP_DECLARE(kept_lock_group, "redwood-said");
 static LCK_MTX_DECLARE(kept_lock, &kept_lock_group);
+
+/*
+ * What the processor wrote, visible to the GPU: the cache lines over `size` bytes at `start`
+ * are cleaned to the point of coherency and a barrier follows. A Metal buffer is written by
+ * the program through a mapping with no cache of the GPU's between it and memory, but on this
+ * processor that mapping can be cached: clearFragment20's constant buffer reached the shader
+ * as zeros until its 256 bytes were cleaned here (test62). NULL: the barrier alone.
+ */
+void redwood_mali_to_memory(const void *start, uint64_t size);
+void
+redwood_mali_to_memory(const void *start, uint64_t size)
+{
+	uint64_t at, end;
+
+	if (start == NULL) {
+		__asm__ volatile ("dsb sy" ::: "memory");
+		return;
+	}
+	at = (uint64_t)(uintptr_t)start & ~63ull;
+	end = (uint64_t)(uintptr_t)start + size;
+	for (; at < end; at += 64) {
+		__asm__ volatile ("dc civac, %0" :: "r"(at) : "memory");
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
 
 /* A line from the kernel itself, kept and said again every minute as kern.redwood.say's "!" ones are. */
 void redwood_keep(const char *format, ...) __printflike(1, 2);
@@ -121,15 +147,6 @@ say_line(__unused struct sysctl_oid *oidp, __unused void *arg1, __unused int arg
 SYSCTL_PROC(_kern_redwood, OID_AUTO, say, CTLTYPE_STRING | CTLFLAG_WR | CTLFLAG_LOCKED | CTLFLAG_ANYBODY, NULL, 0,
     say_line, "A", "");
 
-/*
- * kern.redwood.host_keep: lines for the host that must not be lost with the log's middle. The log the
- * host gets is a 256 KB head and tail of a run's (mtkloader save_log): the pipeline recipes a two-hour
- * run built (run 352) were in neither. A line written here goes into this buffer only (the writer says
- * in the log what it wants said there), and mtkloader puts the buffer into ramoops' pmsg zone when the
- * kernel comes back, by whatever way it does (its end, a panic, the watchdog), where Android shows it
- * as /sys/fs/pstore/pmsg-ramoops-0 and tools/xnu-cycle.sh appends it to the log. Lines that do not fit
- * are counted, not kept.
- */
 #define HOST_KEEP_SIZE 0xff00          /* the pmsg zone is 64 KB, less its header and mtkloader's first line */
 char redwood_host_keep[HOST_KEEP_SIZE];
 uint32_t redwood_host_keep_len, redwood_host_keep_dropped;
@@ -794,6 +811,18 @@ redwood_mali_parameter(uint32_t which, uint64_t *value)
 	case 40:                                /* AFBC_FEATURES: not on this GPU */
 		*value = 0;
 		return true;
+	case 41:                                /* SYSTEM_TIMESTAMP: the GPU's own counter */
+		*value = rd(mali, 0x098) | ((uint64_t) rd(mali, 0x09c) << 32);
+		return true;
+	case 42:                                /* SYSTEM_TIMESTAMP_FREQUENCY: the SoC's counter, 26 MHz */
+		*value = 26000000;
+		return true;
+	case 43:                                /* ALLOWED_JM_CTX_PRIORITIES: medium */
+		*value = 1u << 1;
+		return true;
+	case 44:                                /* SELECTED_COHERENCY: none */
+		*value = 31;
+		return true;
 	default:
 		if (which >= 22 && which <= 37) {
 			*value = rd(mali, 0x0c0 + (which - 22) * 4);
@@ -1089,13 +1118,36 @@ redwood_mali_wait(uint64_t seq, uint64_t timeout_ns)
 	return done;
 }
 
+/* Whether job `seq` is done, a look and no waiting; and the last number given out. For the
+ * service's syncobj waits, which hold fences and have to poll them. */
+bool redwood_mali_done(uint64_t seq);
+bool
+redwood_mali_done(uint64_t seq)
+{
+	bool done;
+
+	lck_mtx_lock(&mali_queue_lock);
+	done = seq == 0 || mali_done_seq >= seq;
+	lck_mtx_unlock(&mali_queue_lock);
+	return done;
+}
+
+uint64_t redwood_mali_last(void);
+uint64_t
+redwood_mali_last(void)
+{
+	return mali_queued_seq;
+}
+
 static void
 mali_thread(__unused void *parameter, __unused wait_result_t result)
 {
 	mali_up();
 	printf("mali: came up to step %u of 6\n", reached);
 	if (reached >= 6) {
-		RedwoodMaliStart();             /* programs can have it now (iokit/Kernel/RedwoodMali.cpp) */
+		RedwoodMaliStart();             /* programs can have it now (iokit/Kernel/redwood_mali.cpp) */
+	}
+	if (reached >= 6) {
 	}
 	for (;;) {
 		delay(60 * 1000 * 1000);

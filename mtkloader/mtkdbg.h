@@ -21,10 +21,6 @@
 #define RAMOOPS_CONSOLE      0x4d09f000ULL
 #define RAMOOPS_CONSOLE_SIZE 0x40000u
 #define RAMOOPS_SIG          0x43474244u
-/* the pmsg zone: Android's request for one XNU boot comes in it (boot-xnu.sh), the kernel's lines for the
- * host go out in it (kern.redwood.host_keep) */
-#define RAMOOPS_PMSG         0x4d0e0000ULL
-#define RAMOOPS_PMSG_SIZE    0x10000u
 
 #define TOPRGU_BASE          0x10007000ULL
 #define TOPRGU_MODE          (TOPRGU_BASE + 0x00)
@@ -36,14 +32,18 @@
 #define TOPRGU_SWRST_KEY     0x1209u
 
 /* LK's framebuffer (mblock "framebuffer"), the layer LK shows the logo on. */
-#define LK_FB_BASE           0x787b0000ULL
-#define LK_FB_SIZE           0x1050000ULL
-#define LK_FB_PITCH          2944u      /* 736 pixels: LK aligns the width to 32 */
-#define PANEL_W              720u
-#define PANEL_H              1640u
+#define LK_FB_BASE           0x7c720000ULL  /* SM-A325F, 1080 x 2400, pitch 4352 */
+#define LK_FB_SIZE           0x022e0000ULL
+#define LK_FB_PITCH          4352u
+#define PANEL_W              1080u
+#define PANEL_H              2400u
 
 #define DISP_MUTEX_EN        0x14001020ULL
-#define DISP_MUTEX_RUN       0x14001024ULL
+#define DISP_MUTEX_SOF       0x1400102cULL
+#define DISP_MUTEX_MOD0      0x14001030ULL
+#define GCE_BASE             0x10238000ULL
+#define GCE_CORE_RESET       0x0
+#define GCE_DO_HARD_RESET    (1u << 16)
 
 #define OVL0_BASE            0x1400b000ULL
 #define OVL_SRC_CON          0x02c      /* a bit per layer the hardware composes */

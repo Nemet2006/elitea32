@@ -544,9 +544,9 @@ redwood_buttons_init(void)
 	if (!PE_parse_boot_argn("buttons", &enabled, sizeof(enabled))) {
 		uint32_t touch_screen = 0;
 
+		/* This is the POCO's driver (buttons=1); the A32's is bsd/dev/redwood_mtkkeys.c (buttons=2). */
 		enabled = PE_parse_boot_argn("touchscreen", &touch_screen, sizeof(touch_screen)) && touch_screen == 1;
 	}
-	/* 2 and touchscreen=2 are the Infinix's, whose buttons are elsewhere (redwood_mtkkeys.c) */
 	if (enabled != 1) {
 		return;
 	}

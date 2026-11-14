@@ -1,7 +1,7 @@
 /*
  * Battery monitor for Xiaomi redwood (POCO X5 Pro).
  *
- * Redwood selects PM7325B and qcom,battery-charger over PMIC GLINK/ADSP, not
+ * The phone selects PM7325B and qcom,battery-charger over PMIC GLINK/ADSP, not
  * the local PM7250B/QG layout.  The resident UEFI contains the matching
  * Qualcomm charger drivers.  xnuloader owns that firmware context on core 0,
  * polls it, and publishes a read-only cache; XNU only consumes that cache.
@@ -113,7 +113,7 @@ battery_poll(void)
 /*
  * What the audio DSP's battery manager says (bsd/dev/redwood_adsp.c, with adsp=1 unless battmgr=0):
  * the values that Android shows, from where Android takes them. They are kept here for the sysctls
- * and passed on to the power source that iOS reads (iokit/Kernel/RedwoodBattery.cpp).
+ * and passed on to the power source that iOS reads (iokit/Kernel/redwood_battery.cpp).
  */
 static int battery_full_uah, battery_design_uah, battery_cycles, battery_source_dsp;
 
@@ -126,7 +126,7 @@ SYSCTL_INT(_kern_redwood, OID_AUTO, battery_cycles, CTLFLAG_RD | CTLFLAG_LOCKED,
 SYSCTL_INT(_kern_redwood, OID_AUTO, battery_from_dsp, CTLFLAG_RD | CTLFLAG_LOCKED,
     &battery_source_dsp, 0, "1 when the values come from the audio DSP's battery manager");
 
-extern void RedwoodBatteryReport(const void *state, unsigned size);     /* iokit/Kernel/RedwoodBattery.cpp */
+extern void RedwoodBatteryReport(const void *state, unsigned size);     /* iokit/Kernel/redwood_battery.cpp */
 
 void
 redwood_battery_report(const struct redwood_battery_state *b)
@@ -180,7 +180,8 @@ redwood_battery_init(void)
 	vm_offset_t page;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("battery", &enabled, sizeof(enabled)) || !enabled) return;
+	/* battery=1 is this Qualcomm cache; the A32's own is bsd/dev/redwood_mtkbattery.c (battery=2). */
+	if (!PE_parse_boot_argn("battery", &enabled, sizeof(enabled)) || enabled != 1) return;
 	if (!PE_parse_boot_argn("battery_shared_pa", &shared_pa, sizeof(shared_pa)) || shared_pa == 0) {
 		printf("battery: xnuloader did not provide battery_shared_pa\n");
 		return;
