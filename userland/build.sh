@@ -333,6 +333,10 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 			-o obj/render-ca-wallpaper ../tools/render-ca-wallpaper.m &&
 			mkdir -p root/share && obj/render-ca-wallpaper "$WALLPAPER" root/share/wallpaper.jpg 375 812 0.4 | tail -1
 	fi
+	if [ -f share/wallpaper.jpg ] && [ ! -f root/share/wallpaper.jpg ]; then
+		mkdir -p root/share
+		cp share/wallpaper.jpg root/share/wallpaper.jpg
+	fi
 	[ -f obj/libredwood-media.dylib ] && cp obj/libredwood-media.dylib root/lib/     # (as with cpu_test)
 	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/

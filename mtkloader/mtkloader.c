@@ -1836,8 +1836,8 @@ static void plog_flush(void)
  */
 static void watcher_display_kick(void)
 {
-	if (rd32(0x1401400c) & 0x80000000u) {   /* DSI_BUSY: the previous frame is still going out */
-		return;
+	uint32_t wait = 20000;
+	while ((rd32(0x1401400c) & 0x80000000u) && --wait) {
 	}
 	wr32(DISP_MUTEX_MOD0, 0x90380u);        /* OVL0|OVL0_2L|RDMA0|DSI0|PWM0 */
 	wr32(DISP_MUTEX_SOF, 0);
@@ -1876,9 +1876,9 @@ void watcher_main(void)
 		}
 #ifndef WATCHER_NO_KICK
 		watcher_display_kick();
-		dbg_delay_ms(16);
+		dbg_delay_ms(11);
 #else
-		dbg_delay_ms(16);
+		dbg_delay_ms(11);
 #endif
 	}
 #else
