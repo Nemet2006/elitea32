@@ -55,7 +55,9 @@ if [ ! -x venv/bin/python3 ]; then
 	python3 -m venv venv
 	venv/bin/pip -q install mako pyyaml packaging
 fi
-export PATH=$B/venv/bin:$PATH
+export PATH=/home/admin_test/Desktop/elitea32/host-tools/sysroot/usr/bin:$B/venv/bin:$PATH
+export BISON_PKGDATADIR=/home/admin_test/Desktop/elitea32/host-tools/sysroot/usr/share/bison
+export M4=/home/admin_test/Desktop/elitea32/host-tools/sysroot/usr/bin/m4
 
 # the compiler is the kernel's wrapper: it names the target (arm64-apple-ios) and the linker (ld64).
 # Archiver and strip: LLVM's where there is one, otherwise Apple's (a Mac with only the command line tools)

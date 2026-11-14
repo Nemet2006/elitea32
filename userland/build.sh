@@ -89,6 +89,8 @@ for d in rootfs cryptex cryptex-app; do
 	echo "build.sh: as tools/new-workspace.sh does. Building against a link damages the shared tree." >&2
 	exit 1
 done
+GL=${GL:-1}
+WIFID=${WIFID:-1}
 # The stock iOS jobs given to launchd, roughly in the order they were brought up.
 IOS_JOBS=${JOBS-"
 	com.apple.notifyd com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.apple.logd
@@ -295,7 +297,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		fi
 	fi
 	cp obj/hello_dyn obj/svc_test obj/surf_test obj/rwtouch obj/cputop obj/nullxpc obj/mg_test root/bin/
-	[ -n "$BT" ] && [ -f obj/bt_test ] && cp obj/bt_test root/bin/     # (src/bt_test.m: CoreBluetooth's scan, for Bluetooth runs)
+	[ -f obj/bt_test ] && cp obj/bt_test root/bin/     # (src/bt_test.m: CoreBluetooth's scan, for Bluetooth runs)
 	[ -f obj/cpu_test ] && cp obj/cpu_test root/bin/        # (a prebuilt/ from before this program has none)
 	[ -f obj/cow_test ] && cp obj/cow_test root/bin/
 	[ -f obj/cg_test ] && cp obj/cg_test root/bin/
@@ -449,6 +451,11 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	for f in bd_m20gl.elf regdb_xiaomi.bin; do
 		[ -f ../fw-wifi/qca6750/$f ] && install -m 0644 ../fw-wifi/qca6750/$f root/fw/
 	done
+fi
+# MT6631 CONNSYS firmware (Wi-Fi, Bluetooth) for MediaTek MT6768/MT6769
+if [ -d ../xnu-deps/build/connsys-fw/firmware ]; then
+	mkdir -p root/fw/connsys
+	cp ../xnu-deps/build/connsys-fw/firmware/* root/fw/connsys/
 fi
 # the network the radio is to join: its name on the first line, its passphrase on the second. Yours, and so not in
 # the repository; it goes where the firmware goes and the kernel reads it there (wifi_join=1; the Infinix's radio,
