@@ -119,7 +119,8 @@ IOS_JOBS=${JOBS-"
 ANGELS=${ANGELS-"com.apple.InputUI"}
 [ -n "$ANGELS" ] && IOS_JOBS="$IOS_JOBS $ANGELS"
 # MORE_JOBS="label ...": other iOS jobs added to the list for a run (the wallpaper's: com.apple.mediaserverd,
-# which decodes HEIC -- the posters' pictures -- for every process)
+# which decodes HEIC -- the posters' pictures -- for every process; com.apple.bluetoothd for Bluetooth)
+MORE_JOBS=${MORE_JOBS-"com.apple.mediaserverd com.apple.bluetoothd"}
 [ -n "$MORE_JOBS" ] && IOS_JOBS="$IOS_JOBS $MORE_JOBS"
 # DROP_JOBS="label ...": jobs left out for a run (com.apple.chronod: no widget extensions, run 326)
 for j in $DROP_JOBS; do IOS_JOBS=$(echo " $IOS_JOBS " | tr '\n\t' '  ' | sed "s/ $j / /g"); done
@@ -430,6 +431,9 @@ with open(path, 'w') as f:
 	# InputUI and virtual keyboard cache directories
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.InputUI\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.keyboards\n' >> root/etc/var.skel
+	# Real iOS system configuration directories: Control Center and SpringBoard state
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/ControlCenter\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SpringBoard\n' >> root/etc/var.skel
 	# A key of ours for root, when there is one: ssh/authorized_keys, never in the repository (like
 	# fw-*). dropbear from the package manager's prefix reads it and lets us in over the phone's
 	# Wi-Fi, which saves rebuilding an image for every question one wants to ask a running iOS. It

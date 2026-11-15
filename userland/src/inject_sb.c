@@ -1668,7 +1668,7 @@ wallpaper_any_screen_class(void)
  * camera (/dev/redwood-camera, mtkcam=5): the tag is added to the visible ones, by the model's own call, a few seconds after start and again later.
  */
 static void
-show_camera_icon(unsigned seconds)
+show_native_icons(unsigned seconds)
 {
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		Class ic = objc_getClass("SBIconController");
@@ -1691,18 +1691,21 @@ show_camera_icon(unsigned seconds)
 			}
 			id visible = SEND(id, who[k], "visibleIconTags"), hidden = SEND(id, who[k], "hiddenIconTags");
 			id more = visible ? SEND1(id, visible, "setByAddingObject:", id, (id)CFSTR("still-camera")) : NULL;
+			if (more) {
+				more = SEND1(id, more, "setByAddingObject:", id, (id)CFSTR("any-telephony"));
+			}
 
 			if (more && ((BOOL (*)(id, SEL, SEL))objc_msgSend)(who[k], respond, set)) {
 				((void (*)(id, SEL, id, id))objc_msgSend)(who[k], set, more, hidden);
-				keep_line("icons: still-camera added to the visible tags of %s", object_getClassName(who[k]));
+				keep_line("icons: still-camera and any-telephony added to the visible tags of %s", object_getClassName(who[k]));
 				break;
 			}
 		}
 		if (model) {
 			id icon = SEND1(id, model, "leafIconForIdentifier:", id, (id)CFSTR("com.apple.camera"));
+			id phone = SEND1(id, model, "leafIconForIdentifier:", id, (id)CFSTR("com.apple.mobilephone"));
 
-			keep_line("icons: camera icon %p visible %d", icon, icon && ((BOOL (*)(id, SEL, SEL))objc_msgSend)(model, respond,
-			    sel_registerName("isIconVisible:")) ? SEND1(BOOL, model, "isIconVisible:", id, icon) : -1);
+			keep_line("icons: camera %p, phone %p visible", icon, phone);
 		}
 	});
 }
@@ -1884,8 +1887,8 @@ redwood_springboard_init(void)
 	 * only one inserted library per program is reliable here, and SpringBoard's is this one; so
 	 * this one opens it, the way a jailbreak's own hook does.
 	 */
-	show_camera_icon(12);
-	show_camera_icon(40);
+	show_native_icons(12);
+	show_native_icons(40);
 	load_tweaks();
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
 	watch_for_faults();

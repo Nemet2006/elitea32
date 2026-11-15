@@ -16,5 +16,13 @@
 	</array>
 	<key>AppleLocale</key>
 	<string>en_US</string>
+	<key>AppleICUForce24HourTime</key>
+	<true/>
+	<key>AppleTemperatureUnit</key>
+	<string>Celsius</string>
+	<key>AppleMeasurementUnits</key>
+	<string>Centimeters</string>
+	<key>AppleMetricUnits</key>
+	<true/>
 </dict>
 </plist>
