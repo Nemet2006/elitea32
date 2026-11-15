@@ -105,7 +105,7 @@ LLD="../xnu-deps/host/zig/zig ld.lld" ./build.sh \
     -DXNU_CORES=4 \
     -DXNU_WATCH_SECONDS=720 \
     -DXNU_RETURN_AFTER='"600"' \
-    -DXNU_EXTRA_ARGS='"cpus=4 fbscale=3 touchscreen=3 buttons=2 mtk_cpufreq=3 battery=2 mali=1"'
+    -DXNU_EXTRA_ARGS='"cpus=4 fbscale=3 touchscreen=3 buttons=2 mtk_cpufreq=3 battery=2 mali=1 connsys_step=17 wifi=1"'
 cd ..
 ```
 

@@ -427,6 +427,9 @@ with open(path, 'w') as f:
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.Preferences\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.camera\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobilesafari\n' >> root/etc/var.skel
+	# InputUI and virtual keyboard cache directories
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.InputUI\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.keyboards\n' >> root/etc/var.skel
 	# A key of ours for root, when there is one: ssh/authorized_keys, never in the repository (like
 	# fw-*). dropbear from the package manager's prefix reads it and lets us in over the phone's
 	# Wi-Fi, which saves rebuilding an image for every question one wants to ask a running iOS. It

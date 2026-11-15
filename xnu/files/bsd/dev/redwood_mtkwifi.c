@@ -1506,6 +1506,17 @@ wf_join(const struct redwood_sta_join *what)
 			}
 		}
 	}
+	if (best == NULL && !zero_bssid) {
+		/* Fallback: match by SSID alone if the requested specific BSSID was not heard */
+		for (unsigned i = 0; i < wf_heard_count; i++) {
+			const struct redwood_sta_bss *b = &wf_heard[i];
+
+			if (b->ssid_length == what->ssid_length && memcmp(b->ssid, what->ssid, b->ssid_length) == 0 &&
+			    (best == NULL || b->rssi > best->rssi)) {
+				best = b;
+			}
+		}
+	}
 	if (best == NULL) {
 		redwood_host_keep_add("connsys: step 17: the network asked for is not heard");
 		return ENOENT;

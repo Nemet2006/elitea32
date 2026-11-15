@@ -2287,7 +2287,12 @@ redwood_connsys_init(void)
 	bool on;
 
 	if (!PE_parse_boot_argn("connsys_step", &step, sizeof(step)) || step < 1) {
-		return;
+		uint32_t wifi_on = 0;
+		if (PE_parse_boot_argn("wifi", &wifi_on, sizeof(wifi_on)) && wifi_on) {
+			step = 17;
+		} else {
+			return;
+		}
 	}
 	connsys_step = step;
 	if (step >= 16) {

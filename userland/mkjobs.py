@@ -78,6 +78,29 @@ for label in labels:
     if angel:
         for key in ('RunAtLoad', 'KeepAlive'):
             job.pop(key, None)
+        # LaunchAngels in iOS 16 specify _ExperimentalNonLaunching: True on MachServices,
+        # which instructs launchd NOT to launch them on Mach lookup (they rely on RunningBoard).
+        # We strip _ExperimentalNonLaunching so launchd launches them on demand.
+        if 'MachServices' in job:
+            for s_name, s_val in list(job['MachServices'].items()):
+                if isinstance(s_val, dict):
+                    s_val.pop('_ExperimentalNonLaunching', None)
+                    if not s_val:
+                        job['MachServices'][s_name] = True
+        job.pop('_AdditionalProperties', None)
+
+    if label == 'com.apple.InputUI':
+        job['RunAtLoad'] = True
+        job['KeepAlive'] = True
+        job['ProcessType'] = 'Interactive'
+        if 'MachServices' in job:
+            for s_name in list(job['MachServices'].keys()):
+                job['MachServices'][s_name] = True
+        job.pop('_AdditionalProperties', None)
+
+    if label == 'com.apple.TextInput.kbd':
+        job['RunAtLoad'] = True
+        job['KeepAlive'] = True
     # TRIM="label:service,service;...": only those Mach services of the job, the rest left to fail at once as
     # if it were not there (mediaserverd for decoding HEIC alone: SpringBoard's synchronous request to its
     # system controller, FigSystemControllerRemoteCreate, is never answered on the Infinix -- run 253)
@@ -116,6 +139,13 @@ if rest:
         for key in ('RunAtLoad', 'KeepAlive', 'StartInterval', 'StartCalendarInterval', 'WatchPaths',
                     'QueueDirectories', 'StartOnMount', 'LaunchEvents'):
             job.pop(key, None)
+        if 'MachServices' in job:
+            for s_name, s_val in list(job['MachServices'].items()):
+                if isinstance(s_val, dict):
+                    s_val.pop('_ExperimentalNonLaunching', None)
+                    if not s_val:
+                        job['MachServices'][s_name] = True
+        job.pop('_AdditionalProperties', None)
         job['StandardErrorPath'] = '/dev/console'
         if label in oslog:
             job.setdefault('EnvironmentVariables', {})['OS_ACTIVITY_DT_MODE'] = 'YES'

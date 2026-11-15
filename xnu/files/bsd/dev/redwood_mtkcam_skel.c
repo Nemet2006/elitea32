@@ -85,13 +85,9 @@ struct mtkcam_platform {
 };
 
 /*
- * ---- THE PORT: fill this in ----
- * Nothing is assumed. For the Infinix Hot 20 the values are in redwood_mtkcam.c (CAM_PITCH, CAM_LINES, CAM_BAYER, CAM_BLACK10, CAM_GAIN_UNITY, ...)
- * and each one says there how it was found.
+ * ---- THE PORT: Samsung Galaxy A32 4G (SM-A325F, MT6769T) ----
  */
-static const struct mtkcam_platform mtkcam_platform = {
-	.name = NULL,
-};
+#include "redwood_mtkcam_platform.h"
 
 /* ---- the platform check ---- */
 static bool
@@ -446,6 +442,7 @@ skel_thread(__unused void *arg, __unused wait_result_t w)
 }
 
 void redwood_mtkcam_skel_init(void);
+void redwood_mtkcam_init(void);
 
 void
 redwood_mtkcam_skel_init(void)
@@ -453,10 +450,21 @@ redwood_mtkcam_skel_init(void)
 	uint32_t level = 0;
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("mtkcam_skel", &level, sizeof(level)) || level < 1) {
+	if (!PE_parse_boot_argn("mtkcam_skel", &level, sizeof(level)) &&
+	    !PE_parse_boot_argn("mtkcam", &level, sizeof(level)) &&
+	    !PE_parse_boot_argn("cam", &level, sizeof(level))) {
+		return;
+	}
+	if (level < 1) {
 		return;
 	}
 	if (kernel_thread_start_priority(skel_thread, NULL, 81 /* BASEPRI_KERNEL */, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
+}
+
+void
+redwood_mtkcam_init(void)
+{
+	redwood_mtkcam_skel_init();
 }
