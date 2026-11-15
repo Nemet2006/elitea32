@@ -91,6 +91,7 @@ for d in rootfs cryptex cryptex-app; do
 done
 GL=${GL:-1}
 WIFID=${WIFID:-1}
+REST=${REST:-1}
 # The stock iOS jobs given to launchd, roughly in the order they were brought up.
 IOS_JOBS=${JOBS-"
 	com.apple.notifyd com.apple.cfprefsd.xpc.daemon com.apple.cfprefsd.xpc.daemon.system com.apple.logd
@@ -120,8 +121,8 @@ ANGELS=${ANGELS-"com.apple.InputUI"}
 [ -n "$ANGELS" ] && IOS_JOBS="$IOS_JOBS $ANGELS"
 # MORE_JOBS="label ...": other iOS jobs added to the list for a run (the wallpaper's: com.apple.mediaserverd,
 # which decodes HEIC -- the posters' pictures -- for every process; com.apple.bluetoothd for Bluetooth;
-# Safari & WebKit daemons; App Store & Apple ID authentication daemons)
-MORE_JOBS=${MORE_JOBS-"com.apple.mediaserverd com.apple.bluetoothd com.apple.Safari.SafeBrowsing.Service com.apple.Safari.History com.apple.WebBookmarks.webbookmarksd com.apple.webkit.webpushd com.apple.webkit.adattributiond com.apple.safarifetcherd com.apple.mobileactivationd com.apple.accountsd com.apple.akd com.apple.appstored com.apple.itunesstored com.apple.storekitd com.apple.amsaccountsd com.apple.appleaccountd com.apple.itunescloudd com.apple.appstorecomponentsd"}
+# Safari & WebKit daemons; App Store & Apple ID authentication daemons; Core iOS system services)
+MORE_JOBS=${MORE_JOBS-"com.apple.mediaserverd com.apple.bluetoothd com.apple.Safari.SafeBrowsing.Service com.apple.Safari.History com.apple.WebBookmarks.webbookmarksd com.apple.webkit.webpushd com.apple.webkit.adattributiond com.apple.safarifetcherd com.apple.mobileactivationd com.apple.accountsd com.apple.akd com.apple.appstored com.apple.itunesstored com.apple.storekitd com.apple.amsaccountsd com.apple.appleaccountd com.apple.itunescloudd com.apple.appstorecomponentsd com.apple.UserEventAgent-System com.apple.tccd com.apple.pasteboard.pasted com.apple.fontservicesd com.apple.geod com.apple.timed com.apple.mobiletimerd com.apple.calaccessd com.apple.sharingd"}
 [ -n "$MORE_JOBS" ] && IOS_JOBS="$IOS_JOBS $MORE_JOBS"
 # DROP_JOBS="label ...": jobs left out for a run (com.apple.chronod: no widget extensions, run 326)
 for j in $DROP_JOBS; do IOS_JOBS=$(echo " $IOS_JOBS " | tr '\n\t' '  ' | sed "s/ $j / /g"); done
@@ -138,7 +139,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system com.apple.WebKit.GPU com.apple.WebKit.WebContent com.apple.WebKit.Networking
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
-/redwood/lib/libredwood-app.dylib Sileo Preferences Camera MobileSafari MobilePhone MobileSMS MobileSlideShow Maps AppStore InputUI"}
+/redwood/lib/libredwood-app.dylib Sileo Preferences Camera MobileSafari MobilePhone MobileSMS MobileSlideShow Maps AppStore InputUI MobileCal MobileTimer MobileNotes Weather Calculator Reminders"}
 # APPLEID=1: the Apple ID / App Store libraries of ours as well (ported from origin/AppleID). Enabled by
 # default for authentic App Store and Apple ID functionality. libredwood.mad.dylib tells mobileactivationd the
 # device is development-fused (activation short-circuits to Activated); libredwood.kc.dylib rewrites
@@ -450,6 +451,31 @@ with open(path, 'w') as f:
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.akd\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.accountsd\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.AppStore\n' >> root/etc/var.skel
+	# TCC, GeoServices, Pasteboard, Calendar, and system app state directories
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/TCC\n' >> root/etc/var.skel
+	printf 'd\t755\t0\t0\t/private/var/db/TCC\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/GeoServices\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/Maps\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Maps\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.Pasteboard\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.mobiletimer\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Calendar\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.camera\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.mobileslideshow\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.MobileSMS\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.mobilephone\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SMS\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/AddressBook\n' >> root/etc/var.skel
+	# SplashBoard snapshot directories for instant app switching
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobilephone\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.MobileSMS\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobileslideshow\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.Maps\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobilecal\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobiletimer\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobilenotes\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.weather\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.calculator\n' >> root/etc/var.skel
 	# A key of ours for root, when there is one: ssh/authorized_keys, never in the repository (like
 	# fw-*). dropbear from the package manager's prefix reads it and lets us in over the phone's
 	# Wi-Fi, which saves rebuilding an image for every question one wants to ask a running iOS. It
