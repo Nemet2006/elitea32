@@ -5,6 +5,9 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
+if ! command -v zig >/dev/null 2>&1 && [ -x "$ROOT/xnu-deps/host/zig/zig" ]; then
+	export PATH="$ROOT/xnu-deps/host/zig:$PATH"
+fi
 LLD="${LLD:-zig ld.lld}"
 CC="${CC:-clang-18}"
 CFLAGS="--target=aarch64-linux-gnu -ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mgeneral-regs-only -mstrict-align -Os -Wall -Wextra"

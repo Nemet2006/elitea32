@@ -119,8 +119,9 @@ IOS_JOBS=${JOBS-"
 ANGELS=${ANGELS-"com.apple.InputUI"}
 [ -n "$ANGELS" ] && IOS_JOBS="$IOS_JOBS $ANGELS"
 # MORE_JOBS="label ...": other iOS jobs added to the list for a run (the wallpaper's: com.apple.mediaserverd,
-# which decodes HEIC -- the posters' pictures -- for every process; com.apple.bluetoothd for Bluetooth)
-MORE_JOBS=${MORE_JOBS-"com.apple.mediaserverd com.apple.bluetoothd"}
+# which decodes HEIC -- the posters' pictures -- for every process; com.apple.bluetoothd for Bluetooth;
+# Safari & WebKit daemons; App Store & Apple ID authentication daemons)
+MORE_JOBS=${MORE_JOBS-"com.apple.mediaserverd com.apple.bluetoothd com.apple.Safari.SafeBrowsing.Service com.apple.Safari.History com.apple.WebBookmarks.webbookmarksd com.apple.webkit.webpushd com.apple.webkit.adattributiond com.apple.safarifetcherd com.apple.mobileactivationd com.apple.accountsd com.apple.akd com.apple.appstored com.apple.itunesstored com.apple.storekitd com.apple.amsaccountsd com.apple.appleaccountd com.apple.itunescloudd com.apple.appstorecomponentsd"}
 [ -n "$MORE_JOBS" ] && IOS_JOBS="$IOS_JOBS $MORE_JOBS"
 # DROP_JOBS="label ...": jobs left out for a run (com.apple.chronod: no widget extensions, run 326)
 for j in $DROP_JOBS; do IOS_JOBS=$(echo " $IOS_JOBS " | tr '\n\t' '  ' | sed "s/ $j / /g"); done
@@ -134,16 +135,16 @@ SILEO_BIN="chmod cp mkdir mv rm"
 # (libredwood-tweaks is the tweak loader of the package manager's prefix, src/inject_tweaks.c: in
 # SpringBoard the library above opens it, here it is named for the programs that have no library of
 # ours -- Settings, where a tweak's own pane belongs. Add a program's name to have tweaks in it.)
-INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system com.apple.WebKit.GPU
+INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system com.apple.WebKit.GPU com.apple.WebKit.WebContent com.apple.WebKit.Networking
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
 /redwood/lib/libredwood-app.dylib Sileo Preferences Camera MobileSafari MobilePhone MobileSMS MobileSlideShow Maps AppStore InputUI"}
-# APPLEID=1: the Apple ID / App Store libraries of ours as well (ported from origin/AppleID). Opt-in,
-# so every other image is untouched -- like aks_keys, these change daemons (accountsd, akd, ...) that
-# must not be touched where no sign-in happens. libredwood.mad.dylib tells mobileactivationd the
+# APPLEID=1: the Apple ID / App Store libraries of ours as well (ported from origin/AppleID). Enabled by
+# default for authentic App Store and Apple ID functionality. libredwood.mad.dylib tells mobileactivationd the
 # device is development-fused (activation short-circuits to Activated); libredwood.kc.dylib rewrites
 # the one passcode-only keychain class akd/accountsd cannot store here to its passcode-free kin.
-if [ -n "$APPLEID" ]; then
+APPLEID=${APPLEID-1}
+if [ -n "$APPLEID" ] && [ "$APPLEID" != "0" ]; then
 	INJECT="$INJECT
 /redwood/lib/libredwood.mad.dylib mobileactivationd
 /redwood/lib/libredwood.kc.dylib akd accountsd itunesstored appstored"
@@ -434,6 +435,21 @@ with open(path, 'w') as f:
 	# Real iOS system configuration directories: Control Center and SpringBoard state
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/ControlCenter\n' >> root/etc/var.skel
 	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SpringBoard\n' >> root/etc/var.skel
+	# Keybags and mobileactivationd state
+	printf 'd\t755\t0\t0\t/private/var/keybags\n' >> root/etc/var.skel
+	# Safari, WebKit, Accounts, and AppStore state directories
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/WebBookmarks\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Accounts\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.mobilesafari\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.WebKit.WebContent\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.WebKit.Networking\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.WebKit.GPU\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.AppStore\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.appstored\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.itunesstored\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.akd\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/Caches/com.apple.accountsd\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.AppStore\n' >> root/etc/var.skel
 	# A key of ours for root, when there is one: ssh/authorized_keys, never in the repository (like
 	# fw-*). dropbear from the package manager's prefix reads it and lets us in over the phone's
 	# Wi-Fi, which saves rebuilding an image for every question one wants to ask a running iOS. It

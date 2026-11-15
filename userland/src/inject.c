@@ -3136,9 +3136,9 @@ redwood_init(void)
 		in_preferences = true;           /* Settings: its XPC to bluetoothd is said (Bluetooth pane, run 732) */
 	} else if (strcmp(name, "BlueTool") == 0) {
 		bluetool_serves();
-	} else if (strcmp(name, "com.apple.WebKit.GPU") == 0) {
+	} else if (strcmp(name, "com.apple.WebKit.GPU") == 0 || strcmp(name, "com.apple.WebKit.WebContent") == 0) {
 		/*
-		 * WebKit's GPU process draws pages with CoreAnimation's Metal renderer too, and dies on the
+		 * WebKit's GPU and WebContent processes draw pages with CoreAnimation's Metal renderer too, and die on the
 		 * same assert as backboardd would without us: ogl-metal.mm:3308 "metallib_url != nil",
 		 * the moment it opens the GPU (run 460: Safari's pages came in over the Wi-Fi, 3 MB, and
 		 * were never drawn). So with camtl=1 it gets the window server's shaders and their hooks.
@@ -3151,7 +3151,7 @@ redwood_init(void)
 		} else {
 			keep_metal_from_core_animation();
 		}
-	} else if (strcmp(name, "InputUI") == 0) {
+	} else if (strcmp(name, "InputUI") == 0 || strcmp(name, "com.apple.WebKit.Networking") == 0) {
 		keep_metal_from_core_animation();
 	} else {
 		/*
