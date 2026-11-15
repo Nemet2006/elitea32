@@ -6,5 +6,7 @@
 	     watchdog gives them on Apple's hardware (20 s for the first frame) -->
 	<key>FBLaunchWatchdogScale</key>
 	<real>20</real>
+	<key>BKNoWatchdogs</key>
+	<true/>
 </dict>
 </plist>

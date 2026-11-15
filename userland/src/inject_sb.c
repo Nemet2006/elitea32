@@ -85,6 +85,18 @@ say(const char *format, ...)
 	write(say_fd, line, (size_t)n);
 }
 
+static void
+keep_line(const char *format, ...)
+{
+	char line[200] = "!";
+	va_list ap;
+
+	va_start(ap, format);
+	vsnprintf(line + 1, sizeof(line) - 1, format, ap);
+	va_end(ap);
+	sysctlbyname("kern.redwood.say", NULL, NULL, line, strlen(line));
+}
+
 /*
  * Boot-arg touch_lat=1: a line for every turn of SpringBoard's main run loop -- when it woke up (a
  * touch, a timer, the display link ...), when CoreAnimation's commit of what that turn changed
@@ -163,7 +175,7 @@ replace_method_of_kind(char kind, const char *class_name, const char *selector, 
 	    class_getInstanceMethod(cls, sel_registerName(selector));
 	IMP original = method ? method_getImplementation(method) : NULL;
 
-	if (original == NULL || (uintptr_t)original != expected + slide) {
+	if (original == NULL || (expected != 0 && (uintptr_t)original != expected + slide)) {
 		say("redwood: %c[%s %s]: found %#lx, expected %#lx; left alone\n", kind, class_name, selector,
 		    original ? (uintptr_t)original - slide : 0, expected);
 		return NULL;
@@ -508,6 +520,75 @@ lock_long_press(id self, SEL selector, id recognizer)
 
 #define UNLOCK_SOURCE_COVER_SHEET       24      /* what the lock screen itself passes */
 
+static void unlock(void);
+
+static void
+go_home(void)
+{
+	Class ui_ctrl = objc_getClass("SBUIController");
+	Class ws_cls = objc_getClass("SBMainWorkspace");
+	id ui = ui_ctrl ? ((id (*)(Class, SEL))objc_msgSend)(ui_ctrl, sel_registerName("sharedInstance")) : nil;
+	id ws = ws_cls ? ((id (*)(Class, SEL))objc_msgSend)(ws_cls, sel_registerName("sharedInstance")) : nil;
+
+	if (ui && class_getInstanceMethod(object_getClass(ui), sel_registerName("restoreContentAndUnscatterIconsAnimated:"))) {
+		((void (*)(id, SEL, BOOL))objc_msgSend)(ui, sel_registerName("restoreContentAndUnscatterIconsAnimated:"), YES);
+		keep_line("redwood: go_home: restoreContentAndUnscatterIconsAnimated done");
+	} else if (ws && class_getInstanceMethod(object_getClass(ws), sel_registerName("returnToHomeScreenWithCompletion:"))) {
+		((void (*)(id, SEL, id))objc_msgSend)(ws, sel_registerName("returnToHomeScreenWithCompletion:"), nil);
+		keep_line("redwood: go_home: returnToHomeScreenWithCompletion done");
+	}
+}
+
+static void
+launch_app(const char *bundle_id)
+{
+	CFStringRef bid = CFStringCreateWithCString(NULL, bundle_id, kCFStringEncodingUTF8);
+	if (!bid) return;
+
+	unlock();
+
+	Class sb_class = objc_getClass("SpringBoard");
+	Class app_ctrl = objc_getClass("SBApplicationController");
+	Class ui_ctrl = objc_getClass("SBUIController");
+	Class ws_cls = objc_getClass("SBMainWorkspace");
+
+	id sb = sb_class ? ((id (*)(Class, SEL))objc_msgSend)(sb_class, sel_registerName("sharedApplication")) : nil;
+	id app_mgr = app_ctrl ? ((id (*)(Class, SEL))objc_msgSend)(app_ctrl, sel_registerName("sharedInstance")) : nil;
+	id ui_mgr = ui_ctrl ? ((id (*)(Class, SEL))objc_msgSend)(ui_ctrl, sel_registerName("sharedInstance")) : nil;
+	id ws = ws_cls ? ((id (*)(Class, SEL))objc_msgSend)(ws_cls, sel_registerName("sharedInstance")) : nil;
+
+	id app = (app_mgr && class_getInstanceMethod(object_getClass(app_mgr), sel_registerName("applicationWithBundleIdentifier:"))) ?
+		((id (*)(id, SEL, id))objc_msgSend)(app_mgr, sel_registerName("applicationWithBundleIdentifier:"), (id)bid) : nil;
+
+	/* Pipeline 1: SBMainWorkspace transition request (full authentic iOS scene transition) */
+	if (ws && app && class_getInstanceMethod(object_getClass(ws), sel_registerName("createRequestForApplicationActivation:options:")) &&
+	    class_getInstanceMethod(object_getClass(ws), sel_registerName("executeTransitionRequest:"))) {
+		id req = ((id (*)(id, SEL, id, unsigned long))objc_msgSend)(ws, sel_registerName("createRequestForApplicationActivation:options:"), app, 0);
+		if (req) {
+			((void (*)(id, SEL, id))objc_msgSend)(ws, sel_registerName("executeTransitionRequest:"), req);
+			keep_line("redwood: launch %s via SBMainWorkspace transition: OK", bundle_id);
+			CFRelease(bid);
+			return;
+		}
+	}
+
+	/* Pipeline 2: SBUIController activateApplication */
+	if (ui_mgr && app && class_getInstanceMethod(object_getClass(ui_mgr), sel_registerName("activateApplication:"))) {
+		((void (*)(id, SEL, id))objc_msgSend)(ui_mgr, sel_registerName("activateApplication:"), app);
+		keep_line("redwood: launch %s via SBUIController activate: OK", bundle_id);
+		CFRelease(bid);
+		return;
+	}
+
+	/* Pipeline 3: SpringBoard launchApplicationWithIdentifier:suspended: */
+	if (sb && class_getInstanceMethod(object_getClass(sb), sel_registerName("launchApplicationWithIdentifier:suspended:"))) {
+		BOOL ok = ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(sb, sel_registerName("launchApplicationWithIdentifier:suspended:"), (id)bid, NO);
+		keep_line("redwood: launch %s via SpringBoard: %s", bundle_id, ok ? "OK" : "FAILED");
+	}
+
+	CFRelease(bid);
+}
+
 static void
 unlock(void)
 {
@@ -531,6 +612,18 @@ unlock(void)
 
 		say("redwood: unlock: asked, answer %d\n", done);
 	}
+}
+
+static void
+schedule_unlock(int attempt)
+{
+	if (attempt >= 5) {
+		return;
+	}
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (attempt == 0 ? 8 : 4) * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		unlock();
+		schedule_unlock(attempt + 1);
+	});
 }
 
 /*
@@ -872,25 +965,29 @@ layers(void)
  * "rdar://45025538". Where that is the answer, the iPhone X's own provider is given instead: the
  * layout is the same, in points. Boot-arg sb_statusbar=0: left as UIKit has it.
  */
-static void keep_line(const char *format, ...) __printflike(1, 2);
-
 static Class (*original_provider_for_screen)(id self, SEL selector, id screen, id info);
 
 static Class
-provider_for_screen(id self, SEL selector, id screen, id info)
+provider_for_screen(__unused id self, __unused SEL selector, __unused id screen, __unused id info)
 {
 	static int said;
-	Class answer = original_provider_for_screen(self, selector, screen, info);
 	Class iphone_x = objc_getClass("_UIStatusBarVisualProvider_Split1125");
 
-	if ((answer == Nil || strstr(class_getName(answer), "Fallback") != NULL) && iphone_x != Nil) {
+	if (iphone_x != Nil) {
 		if (!said++) {
-			keep_line("redwood: status bar: %s for this screen; the iPhone X's provider instead",
-			    answer ? class_getName(answer) : "none");
+			keep_line("redwood: status bar: forcing %s (Clock Left, Cutout Center, Battery Right)",
+			    class_getName(iphone_x));
 		}
 		return iphone_x;
 	}
-	return answer;
+	return original_provider_for_screen ? original_provider_for_screen(self, selector, screen, info) : Nil;
+}
+
+static Class
+status_bar_instance_visual_provider(__unused id self, __unused SEL sel)
+{
+	Class iphone_x = objc_getClass("_UIStatusBarVisualProvider_Split1125");
+	return iphone_x ? iphone_x : Nil;
 }
 
 static void
@@ -899,6 +996,7 @@ status_bar_provider(void)
 	static const char *owners[] = { "_UIStatusBarVisualProvider_iOS", "_UIStatusBarVisualProvider_Phone",
 		"_UIStatusBarVisualProvider_Split", "_UIStatusBarVisualProvider" };
 	SEL selector = sel_registerName("visualProviderSubclassForScreen:visualProviderInfo:");
+	Class sb_class;
 
 	for (unsigned i = 0; i < sizeof(owners) / sizeof(owners[0]); i++) {
 		Class cls = objc_getClass(owners[i]);
@@ -908,10 +1006,25 @@ status_bar_provider(void)
 			original_provider_for_screen = (Class (*)(id, SEL, id, id))method_setImplementation(method,
 			    (IMP)provider_for_screen);
 			keep_line("redwood: status bar: +[%s visualProviderSubclassForScreen:visualProviderInfo:] replaced", owners[i]);
-			return;
+			break;
 		}
 	}
-	keep_line("redwood: status bar: no class answers visualProviderSubclassForScreen:visualProviderInfo:");
+	sb_class = objc_getClass("_UIStatusBar");
+	if (sb_class != Nil) {
+		Method m1 = class_getInstanceMethod(sb_class, sel_registerName("visualProviderClass"));
+		if (m1 != NULL) {
+			method_setImplementation(m1, (IMP)status_bar_instance_visual_provider);
+		}
+		Method m2 = class_getInstanceMethod(sb_class, sel_registerName("_visualProviderClass"));
+		if (m2 != NULL) {
+			method_setImplementation(m2, (IMP)status_bar_instance_visual_provider);
+		}
+		Method m3 = class_getClassMethod(sb_class, sel_registerName("visualProviderClassForTraitCollection:"));
+		if (m3 != NULL) {
+			method_setImplementation(m3, (IMP)status_bar_instance_visual_provider);
+		}
+		keep_line("redwood: status bar: _UIStatusBar visualProvider methods hooked to Split1125");
+	}
 }
 
 /*
@@ -925,18 +1038,6 @@ status_bar_provider(void)
  * Boot-arg sb_wallpaper=0: not at all.
  */
 #define REDWOOD_WALLPAPER "/redwood/share/wallpaper.jpg"
-
-static void
-keep_line(const char *format, ...)
-{
-	char line[200] = "!";
-	va_list ap;
-
-	va_start(ap, format);
-	vsnprintf(line + 1, sizeof(line) - 1, format, ap);
-	va_end(ap);
-	sysctlbyname("kern.redwood.say", NULL, NULL, line, strlen(line));
-}
 
 static void
 put_wallpaper(int attempt)
@@ -1606,6 +1707,131 @@ show_camera_icon(unsigned seconds)
 	});
 }
 
+/* ---- Real iOS design language & fluid gesture navigation integration ---------------------------- */
+
+/* 1. Curved display corners: iPhone X / A32 39.0 pt corner radius for sheets, windows, alerts */
+static double
+screen_display_corner_radius(__unused id self, __unused SEL selector)
+{
+	return 39.0;
+}
+
+/* 2. Modern bezel-less iPhone identity: rounded screen & home gesture navigation */
+static BOOL
+platform_is_round_corner_phone(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+static BOOL
+platform_is_home_gesture_enabled(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+static BOOL
+home_gesture_settings_is_enabled(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+static BOOL
+app_switcher_round_corners_swipe_up(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+/* 3. Floating Inset Dock: authentic floating rounded capsule dock above home indicator */
+static BOOL
+dock_view_is_dock_inset(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+/* 4. Home Grabber Pill: persistent, crisp Home Indicator affordance at screen bottom */
+static BOOL
+home_grabber_settings_is_enabled(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+/* 5. Policy Aggregator: authorize system gestures, Control Center, CoverSheet, dismiss */
+static BOOL
+policy_allow_system_gesture(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("system gestures authorized");
+	}
+	return YES;
+}
+
+static BOOL
+policy_has_fully_setup_user(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("user fully set up");
+	}
+	return YES;
+}
+
+static BOOL
+policy_allow_control_center(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("control center allowed");
+	}
+	return YES;
+}
+
+static BOOL
+policy_allow_coversheet(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("cover sheet allowed");
+	}
+	return YES;
+}
+
+static BOOL
+policy_allow_lockscreen_cc(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("lockscreen CC allowed");
+	}
+	return YES;
+}
+
+static BOOL
+policy_allow_lockscreen_nc(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("lockscreen NC allowed");
+	}
+	return YES;
+}
+
+static BOOL
+policy_allow_dismiss_coversheet(__unused id self, __unused SEL selector, id *explanation)
+{
+	if (explanation != NULL) {
+		*explanation = (id)CFSTR("dismiss cover sheet allowed");
+	}
+	return YES;
+}
+
+/* 6. Lock screen circular quick action buttons: Flashlight & Camera shortcuts */
+static BOOL
+quick_actions_has_camera(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
+static BOOL
+quick_actions_has_flashlight(__unused id self, __unused SEL selector)
+{
+	return YES;
+}
+
 __attribute__((constructor))
 static void
 redwood_springboard_init(void)
@@ -1699,6 +1925,40 @@ redwood_springboard_init(void)
 	    0x1c48c2cf4UL, (IMP)ring_charging_level);
 	battery_lvl = (IMP)original_battery_level;
 	battery_st  = (IMP)original_battery_state;
+
+	/*
+	 * Modern iOS design & fluid navigation hooks (iOS 16, iPhone X / A32):
+	 *   - UIScreen _displayCornerRadius: 39.0pt authentic hardware curvature
+	 *   - SBPlatformController isRoundCornerPhone & isHomeGestureEnabled: YES
+	 *   - SBHomeGestureSettings isHomeGestureEnabled: YES
+	 *   - SBAppSwitcherSettings shouldRoundCornersDuringSwipeUp: YES
+	 *   - SBDockView isDockInset: YES (floating rounded dock capsule)
+	 *   - SBFHomeGrabberSettings isEnabled: YES (persistent Home Indicator pill)
+	 *   - SBMainDisplayPolicyAggregator: authorize system gestures, CC, CoverSheet
+	 *   - CSQuickActionsViewController: lock screen flashlight & camera shortcuts
+	 */
+	replace_method("UIScreen", "_displayCornerRadius", 0x188e77408UL, (IMP)screen_display_corner_radius);
+	replace_method("SBPlatformController", "isRoundCornerPhone", 0x1c4a16abcUL, (IMP)platform_is_round_corner_phone);
+	replace_method("SBPlatformController", "isHomeGestureEnabled", 0x1c4a3f9d4UL, (IMP)platform_is_home_gesture_enabled);
+	replace_method("SBHomeGestureSettings", "isHomeGestureEnabled", 0x1c4a1cb5cUL, (IMP)home_gesture_settings_is_enabled);
+	replace_method("SBAppSwitcherSettings", "shouldRoundCornersDuringSwipeUp", 0x1c4a43034UL, (IMP)app_switcher_round_corners_swipe_up);
+	replace_method("SBDockView", "isDockInset", 0x1c44d82a4UL, (IMP)dock_view_is_dock_inset);
+	replace_method("SBFHomeGrabberSettings", "isEnabled", 0x18e5f28d8UL, (IMP)home_grabber_settings_is_enabled);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilitySystemGestureWithExplanation:", 0x1c4a3a268UL, (IMP)policy_allow_system_gesture);
+	replace_method("SBMainDisplayPolicyAggregator", "_hasFullySetUpUserWithExplanation:", 0x1c4a3a330UL, (IMP)policy_has_fully_setup_user);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityControlCenterWithExplanation:", 0x1c4a714f8UL, (IMP)policy_allow_control_center);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityCoverSheetWithExplanation:", 0x1c4a60934UL, (IMP)policy_allow_coversheet);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityLockScreenControlCenterWithExplanation:", 0x1c4a64958UL, (IMP)policy_allow_lockscreen_cc);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityLockScreenNotificationCenterWithExplanation:", 0x1c4a653f0UL, (IMP)policy_allow_lockscreen_nc);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityDismissCoverSheetWithExplanation:", 0x1c4a3f8c8UL, (IMP)policy_allow_dismiss_coversheet);
+	replace_method("CSQuickActionsViewController", "hasCamera", 0x1c4844940UL, (IMP)quick_actions_has_camera);
+	replace_method("CSQuickActionsViewController", "hasFlashlight", 0x1c485d1a8UL, (IMP)quick_actions_has_flashlight);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityLockScreenCameraWithExplanation:", 0, (IMP)policy_allow_system_gesture);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityLockScreenCameraSupportedWithExplanation:", 0, (IMP)policy_allow_system_gesture);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilitySpotlightWithExplanation:", 0, (IMP)policy_allow_system_gesture);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityHomeScreenEditingWithExplanation:", 0, (IMP)policy_allow_system_gesture);
+	replace_method("SBMainDisplayPolicyAggregator", "_allowsCapabilityTodayViewWithExplanation:", 0, (IMP)policy_allow_system_gesture);
+	say("redwood: modern iOS UI: rounded corners (39pt), home gestures, floating inset dock, home grabber, lockscreen quick actions active\n");
 	say("redwood: SpringBoard: activation %s, setup assistant %s, application snapshots %s, the side button's long press %s, "
 	    "battery level %s, battery state %s, poster switcher %s\n",
 	    activation ? "answered here" : "NOT replaced", original_set_setup_required_reason ? "refused" : "NOT replaced",
@@ -1783,6 +2043,27 @@ redwood_springboard_init(void)
 	notify_register_dispatch("com.redwood.switcher", &token, dispatch_get_main_queue(), ^(__unused int t) {
 		switcher();
 	});
+	notify_register_dispatch("com.redwood.launch.preferences", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.Preferences");
+	});
+	notify_register_dispatch("com.redwood.launch.camera", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.camera");
+	});
+	notify_register_dispatch("com.redwood.launch.safari", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.mobilesafari");
+	});
+	notify_register_dispatch("com.redwood.launch.phone", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.mobilephone");
+	});
+	notify_register_dispatch("com.redwood.launch.sms", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.MobileSMS");
+	});
+	notify_register_dispatch("com.redwood.launch.photos", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		launch_app("com.apple.mobileslideshow");
+	});
+	notify_register_dispatch("com.redwood.home", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		go_home();
+	});
 	/*
 	 * Belt-and-suspenders unlock. The user can always swipe up to open the home screen -- that
 	 * works fine when the touch driver is doing its job. But if touch is still probing, has
@@ -1805,7 +2086,5 @@ redwood_springboard_init(void)
 			return;
 		}
 	}
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-		unlock();
-	});
+	schedule_unlock(0);
 }

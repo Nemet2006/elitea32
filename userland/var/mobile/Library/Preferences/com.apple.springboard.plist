@@ -17,5 +17,16 @@
 	     Percentage, which an iPhone X has off at first) -->
 	<key>SBShowBatteryPercentage</key>
 	<true/>
+	<!-- Modern iOS fluid gesture navigation & control surfaces -->
+	<key>SBHomeGestureEnabled</key>
+	<true/>
+	<key>SBControlCenterAllowedFromWithinApps</key>
+	<true/>
+	<key>SBControlCenterAllowedFromLockScreen</key>
+	<true/>
+	<key>SBCoverSheetAllowedFromWithinApps</key>
+	<true/>
+	<key>SBFloatingDockAllowsSystemGestures</key>
+	<true/>
 </dict>
 </plist>

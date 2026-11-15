@@ -100,6 +100,7 @@ IOS_JOBS=${JOBS-"
 	com.apple.powerd com.apple.analyticsd com.apple.logd_helper
 	com.apple.iconservices.iconservicesagent com.apple.pluginkit.pkd
 	com.apple.SpringBoard com.apple.chronod com.apple.sleepd com.apple.mediaremoted
+	com.apple.TextInput.kbd
 "}
 # (com.apple.mediaremoted: without it SpringBoard's MediaRemote spins in its XPC handler -- two of the four
 # cores on an idle home screen once mediaserverd runs, and the widgets with it; run 328-329, 400% -> 14%)
@@ -113,7 +114,9 @@ IOS_JOBS=${JOBS-"
 	com.apple.trustd com.apple.securityd com.apple.nsurlsessiond com.apple.cfnetwork.cfnetworkagent"
 # ANGELS="label ...": launch angels among them (System/Library/LaunchAngels, which init hides from launchd): the
 # wallpaper as iOS draws it wants com.apple.PosterBoard (the posters) and com.apple.PaperBoard, which SpringBoard
-# asks for and which do not run otherwise -- the black behind the icons with sb_wallpaper=0 (run 246)
+# asks for and which do not run otherwise -- the black behind the icons with sb_wallpaper=0 (run 246);
+# com.apple.InputUI: out-of-process iOS 16 on-screen keyboard (InputUI.app)
+ANGELS=${ANGELS-"com.apple.InputUI"}
 [ -n "$ANGELS" ] && IOS_JOBS="$IOS_JOBS $ANGELS"
 # MORE_JOBS="label ...": other iOS jobs added to the list for a run (the wallpaper's: com.apple.mediaserverd,
 # which decodes HEIC -- the posters' pictures -- for every process)
@@ -133,8 +136,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system com.apple.WebKit.GPU
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
-/redwood/lib/libredwood-app.dylib Sileo
-/redwood/lib/libredwood-tweaks.dylib Preferences"}
+/redwood/lib/libredwood-app.dylib Sileo Preferences Camera MobileSafari MobilePhone MobileSMS MobileSlideShow Maps AppStore InputUI"}
 # APPLEID=1: the Apple ID / App Store libraries of ours as well (ported from origin/AppleID). Opt-in,
 # so every other image is untouched -- like aks_keys, these change daemons (accountsd, akd, ...) that
 # must not be touched where no sign-in happens. libredwood.mad.dylib tells mobileactivationd the
@@ -259,7 +261,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
-		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc -framework Metal \
 			-o obj/libredwood-app.dylib src/inject_app.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
@@ -411,6 +413,20 @@ with open(path, 'w') as f:
 	# the prefix with the root on the flash, downloads every package and index there, and without it each
 	# download ended in "No such file or directory"
 	printf 'd\t700\t501\t501\t/private/var/mobile/tmp\n' >> root/etc/var.skel
+	# Container directories for iOS apps and sandbox daemons
+	printf 'd\t755\t0\t0\t/private/var/containers/Bundle/Application\n' >> root/etc/var.skel
+	printf 'd\t755\t0\t0\t/private/var/containers/Data/Application\n' >> root/etc/var.skel
+	printf 'd\t755\t0\t0\t/private/var/containers/Data/PluginKitPlugin\n' >> root/etc/var.skel
+	printf 'd\t755\t0\t0\t/private/var/containers/Shared/AppGroup\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Containers/Bundle/Application\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Containers/Data/Application\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Containers/Data/PluginKitPlugin\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Containers/Shared/AppGroup\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.Preferences\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.camera\n' >> root/etc/var.skel
+	printf 'd\t755\t501\t501\t/private/var/mobile/Library/SplashBoard/Snapshots/com.apple.mobilesafari\n' >> root/etc/var.skel
 	# A key of ours for root, when there is one: ssh/authorized_keys, never in the repository (like
 	# fw-*). dropbear from the package manager's prefix reads it and lets us in over the phone's
 	# Wi-Fi, which saves rebuilding an image for every question one wants to ask a running iOS. It

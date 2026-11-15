@@ -8,5 +8,27 @@
 	     dies. This says the introduction has been shown. -->
 	<key>DidShowContinuousPathIntroduction</key>
 	<true/>
+	<key>KeyboardContinuousPathEnabled</key>
+	<false/>
+	<key>KeyboardAutocorrection</key>
+	<false/>
+	<key>KeyboardPrediction</key>
+	<false/>
+	<key>KeyboardShowPredictionBar</key>
+	<false/>
+	<key>DictationEnabled</key>
+	<false/>
+	<key>AppleKeyboards</key>
+	<array>
+		<string>en_US@hw=Automatic;sw=QWERTY</string>
+		<string>az_AZ@hw=Automatic;sw=QWERTY</string>
+	</array>
+	<key>AppleKeyboardsExpanded</key>
+	<integer>1</integer>
+	<key>Keyboards</key>
+	<array>
+		<string>en_US@hw=Automatic;sw=QWERTY</string>
+		<string>az_AZ@hw=Automatic;sw=QWERTY</string>
+	</array>
 </dict>
 </plist>

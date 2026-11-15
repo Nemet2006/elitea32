@@ -9,6 +9,7 @@
  * which `ipsw dyld a2s <cache> <address>` turns back into names.
  */
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <objc/message.h>
@@ -330,10 +331,19 @@ watched_copy_path(id self, SEL cmd, id from, id to, id *error)
 	return file_said("copyItemAtPath", ok, from, to, error != NULL ? *error : mine);
 }
 
+extern id MTLCreateSystemDefaultDevice(void);
+
+static id
+my_MTLCreateSystemDefaultDevice(void)
+{
+	return nil;
+}
+
 __attribute__((used)) static struct {
 	const void *ours, *theirs;
-} spawn_interpose __attribute__((section("__DATA,__interpose"))) = {
-	(const void *)watched_spawn, (const void *)posix_spawn
+} spawn_interpose[] __attribute__((section("__DATA,__interpose"))) = {
+	{ (const void *)watched_spawn, (const void *)posix_spawn },
+	{ (const void *)my_MTLCreateSystemDefaultDevice, (const void *)MTLCreateSystemDefaultDevice }
 };
 
 /* Put ours in the place of a method, keeping the one that was there. */
@@ -346,6 +356,80 @@ watch(const char *name, const char *selector, IMP ours, void *theirs)
 	if (method != NULL && method_getImplementation(method) != ours) {
 		*(IMP *)theirs = method_setImplementation(method, ours);
 	}
+}
+
+/* Modern iOS authentic curved display corners (39.0pt) for applications */
+static double
+app_display_corner_radius(__unused id self, __unused SEL sel)
+{
+	return 39.0;
+}
+
+#define MTL_DEVICE_ARRAY        0x1e1efe9a0UL   /* Metal's static NSMutableArray *_deviceArray */
+
+extern id objc_retain(id object);
+
+/*
+ * Keep Metal device from CoreAnimation in application processes:
+ * If MTLCreateSystemDefaultDevice() returns a device, UIKit/QuartzCore enters
+ * CA::OGL::new_metal_context and asserts on missing default.metallib (metallib_url != nil).
+ * By clearing _deviceArray, MTLCreateSystemDefaultDevice() returns nil, and QuartzCore
+ * falls back safely to its supported OpenGL ES / software renderer.
+ */
+static void
+keep_metal_from_core_animation(void)
+{
+	unsigned long (*ask)(id, SEL) = (unsigned long (*)(id, SEL))objc_msgSend;
+	void (*tell)(id, SEL) = (void (*)(id, SEL))objc_msgSend;
+	id (*create)(void) = (id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice");
+	id *slot = (id *)(MTL_DEVICE_ARRAY + slide);
+	id device, array;
+	unsigned long held;
+
+	if (create == NULL) {
+		return;
+	}
+	if ((device = create()) == NULL) {
+		return;
+	}
+	if ((array = *slot) == NULL) {
+		return;
+	}
+	Class ns_mutable_array = objc_getClass("NSMutableArray");
+	if (ns_mutable_array != Nil && !((BOOL (*)(id, SEL, Class))objc_msgSend)(array, sel_registerName("isKindOfClass:"), ns_mutable_array)) {
+		return;
+	}
+	held = ask(array, sel_registerName("count"));
+	objc_retain(device);
+	tell(array, sel_registerName("removeAllObjects"));
+	char msg[128];
+	snprintf(msg, sizeof(msg), "redwood: app %s: metal device held and removed (%lu), MTLCreateSystemDefaultDevice() = nil\n",
+	    who, held);
+	say(msg, strlen(msg));
+}
+
+#define REDWOOD_TWEAK_LOADER        "/redwood/lib/libredwood-tweaks.dylib"
+#define REDWOOD_TWEAK_LOADER_SYSTEM "/usr/lib/redwood/libredwood-tweaks.dylib"
+
+static void
+load_tweaks(void)
+{
+	struct stat st;
+	const char *loader = REDWOOD_TWEAK_LOADER;
+
+	if (stat("/var/jb/usr/lib/TweakInject", &st) != 0) {
+		return;
+	}
+	if (stat(loader, &st) != 0) {
+		loader = REDWOOD_TWEAK_LOADER_SYSTEM;
+	}
+	dlopen(loader, RTLD_NOW | RTLD_GLOBAL);
+}
+
+static BOOL
+personas_are_supported(__unused id self, __unused SEL selector)
+{
+	return NO;
 }
 
 __attribute__((constructor))
@@ -366,6 +450,21 @@ redwood_app_init(void)
 	snprintf(line, sizeof(line), "redwood: %s started, process %d", name, getpid());
 	say_kept(line);
 	slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - CACHE_BASE;
+
+	/* Keep Metal from QuartzCore so the app doesn't assert on metallib_url != nil */
+	keep_metal_from_core_animation();
+
+	/* Load jailbreak / tweak extensions if present */
+	load_tweaks();
+
+	/* ContainerManager personas bypass */
+	Class mcm = objc_getClass("MCMUserIdentityCache");
+	if (mcm != Nil) {
+		Method m = class_getClassMethod(mcm, sel_registerName("personasAreSupported"));
+		if (m != NULL) {
+			method_setImplementation(m, (IMP)personas_are_supported);
+		}
+	}
 	/*
 	 * An application's standard error goes nowhere here, and that is where the Swift runtime says
 	 * what it is about to die of ("Fatal error: ..."), so it is pointed at the console.
@@ -383,6 +482,8 @@ redwood_app_init(void)
 	if (strcmp(name, "Sileo") == 0) {
 		dispatch_async(dispatch_get_main_queue(), ^{ keep_to_the_repositories(); });
 	}
+	static IMP orig_corner_radius;
+	watch("UIScreen", "_displayCornerRadius", (IMP)app_display_corner_radius, &orig_corner_radius);
 	watch("UIApplication", "beginBackgroundTaskWithExpirationHandler:", (IMP)watched_begin_task, &begin_task);
 	/*
 	 * NSURLSessionTask alone: its subclasses inherit the very same method, and watching it twice

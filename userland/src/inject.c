@@ -1789,15 +1789,11 @@ container_manager_fixes(void)
 {
 	Class cls = objc_getClass("MCMUserIdentityCache");
 	Method method = cls ? class_getClassMethod(cls, sel_registerName("personasAreSupported")) : NULL;
-	IMP original = method ? method_getImplementation(method) : NULL;
 
-	if (original == NULL || (uintptr_t)original != 0x1c3ea6298UL + slide) {
-		say("redwood: +[MCMUserIdentityCache personasAreSupported]: found %#lx, not what was expected; left alone\n",
-		    original ? (uintptr_t)original - slide : 0);
-		return;
+	if (method != NULL) {
+		method_setImplementation(method, (IMP)personas_are_supported);
+		say("redwood: container manager: no personas\n");
 	}
-	method_setImplementation(method, (IMP)personas_are_supported);
-	say("redwood: container manager: no personas\n");
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -3147,15 +3143,21 @@ redwood_init(void)
 		 * the moment it opens the GPU (run 460: Safari's pages came in over the Wi-Fi, 3 MB, and
 		 * were never drawn). So with camtl=1 it gets the window server's shaders and their hooks.
 		 */
-		window_server_keeps_opengl_es();
+		char arguments[1024] = "";
+		size_t size = sizeof(arguments) - 1;
+
+		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && strstr(arguments, "camtl=1") != NULL) {
+			window_server_keeps_opengl_es();
+		} else {
+			keep_metal_from_core_animation();
+		}
+	} else if (strcmp(name, "InputUI") == 0) {
+		keep_metal_from_core_animation();
 	} else {
 		/*
-		 * Any other app we are injected into (Preferences for the Apple ID 2FA sheet, the App Store):
-		 * with camtl=1 its QuartzCore takes the Metal road too and asserts metallib_url != nil in
-		 * CA::OGL::new_metal_context (ogl-metal.mm:3308), because QuartzCore.framework/default.metallib
-		 * is not in the image -- which is why Settings aborted on the 2FA code sheet (run 473,
-		 * userabort Preferences: _abort <- _err <- QuartzCore). Give the app the same shaders and hooks
-		 * the window server gets, so it does not abort. give_quartzcore_its_shaders() is process-agnostic.
+		 * Any other app/daemon we are injected into: with camtl=1 its QuartzCore takes the Metal
+		 * road too, needing QuartzCore's shaders. Without camtl=1, keep Metal device from QuartzCore
+		 * so it falls back cleanly to OpenGL ES / software without asserting on metallib_url != nil.
 		 */
 		char arguments[1024] = "";
 		size_t size = sizeof(arguments) - 1;
@@ -3163,6 +3165,8 @@ redwood_init(void)
 		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0 && strstr(arguments, "camtl=1") != NULL) {
 			say("redwood: camtl=1: %s gets QuartzCore's Metal shaders too\n", name);
 			give_quartzcore_its_shaders();
+		} else {
+			keep_metal_from_core_animation();
 		}
 	}
 }
