@@ -264,8 +264,8 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
-		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc -framework Metal \
-			-o obj/libredwood-app.dylib src/inject_app.c
+		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc -framework Foundation -framework CoreGraphics -framework UIKit -framework Metal \
+			-x objective-c -o obj/libredwood-app.dylib src/inject_app.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
 			-o obj/libredwood-media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c

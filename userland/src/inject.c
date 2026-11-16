@@ -1422,12 +1422,13 @@ extern void IOHIDEventSetIntegerValue(IOHIDEventRef event, uint32_t field, CFInd
  * leaves an application, the swipe back in a navigation stack, the pull down from the top) take
  * no touch that is not so marked, whatever its path. All we have is where the finger landed.
  */
-#define EDGE_SIDE       (16.0 / 375)
-#define EDGE_TOP        (16.0 / 812)
-#define EDGE_BOTTOM     (34.0 / 812)    /* the strip below the applications' content, where the home bar is */
+#define EDGE_SIDE       (8.0 / 375)
+#define EDGE_TOP        (14.0 / 812)
+#define EDGE_BOTTOM     (16.0 / 812)    /* the strip below the applications' content, where the home bar is */
 
 static struct {
 	bool touching, edge;
+	bool mapped_123;
 	double x, y;
 } fingers[MAX_FINGERS];
 
@@ -1591,7 +1592,9 @@ make_service(IOHIDEventSystemClientRef client, const char *product, int page, in
 static void
 send_touch(IOHIDServiceClientRef screen, const struct redwood_touch *t)
 {
-	uint32_t change = t->type == REDWOOD_TOUCH_MOVE ? DIGITIZER_POSITION : DIGITIZER_RANGE | DIGITIZER_TOUCH;
+	uint32_t change = (t->type == REDWOOD_TOUCH_MOVE)
+	    ? DIGITIZER_POSITION
+	    : (DIGITIZER_RANGE | DIGITIZER_TOUCH | DIGITIZER_POSITION);
 	IOHIDEventRef hand, finger;
 	bool any = false;
 	unsigned f = t->finger;
@@ -1600,17 +1603,33 @@ send_touch(IOHIDServiceClientRef screen, const struct redwood_touch *t)
 		return;
 	}
 	fingers[f].touching = t->type != REDWOOD_TOUCH_UP;
-	fingers[f].x = t->x / 65535.0;
-	fingers[f].y = t->y / 65535.0;
+	double raw_x = t->x / 65535.0;
+	double raw_y = t->y / 65535.0;
+
+	fingers[f].x = raw_x;
+	fingers[f].y = raw_y;
+
 	if (t->type == REDWOOD_TOUCH_DOWN) {
-		fingers[f].edge = fingers[f].x < EDGE_SIDE || fingers[f].x > 1 - EDGE_SIDE || fingers[f].y < EDGE_TOP ||
-		    fingers[f].y > 1 - EDGE_BOTTOM;
+		/*
+		 * In the bottom-left keyboard region (x <= 0.30, y >= 0.78), ensure this touch
+		 * is NEVER marked as an edge gesture (edge = false), so backboardd delivers it
+		 * cleanly to UIKit without gesture interception.
+		 */
+		bool is_bottom_left_switch = (raw_x <= 0.30 && raw_y >= 0.78);
+		if (is_bottom_left_switch) {
+			fingers[f].edge = false;
+		} else {
+			bool is_top = (fingers[f].y < EDGE_TOP);
+			bool is_bottom_home = (fingers[f].y > 1.0 - EDGE_BOTTOM) && (fingers[f].x >= 0.25 && fingers[f].x <= 0.75);
+			bool is_side_back = (fingers[f].y < 0.45) && (fingers[f].x < EDGE_SIDE || fingers[f].x > 1.0 - EDGE_SIDE);
+			fingers[f].edge = is_top || is_bottom_home || is_side_back;
+		}
 	}
 	for (unsigned i = 0; i < MAX_FINGERS; i++) {
 		any |= fingers[i].touching;
 	}
 
-	hand = IOHIDEventCreateDigitizerEvent(NULL, t->time, DIGITIZER_HAND, 0, 0, change & ~DIGITIZER_RANGE, 0, fingers[f].x,
+	hand = IOHIDEventCreateDigitizerEvent(NULL, t->time, DIGITIZER_HAND, 0, 0, change, 0, fingers[f].x,
 	    fingers[f].y, 0, 0, 0, 0, any, any, 0);
 	IOHIDEventSetIntegerValue(hand, FIELD_DIGITIZER_DISPLAY_INTEGRATED, 1);
 	IOHIDEventSetIntegerValue(hand, FIELD_IS_BUILT_IN, 1);

@@ -459,7 +459,7 @@ wifi(void)
 		return;
 	}
 	for (const char *word = strtok(arguments, " "); word != NULL; word = strtok(NULL, " ")) {
-		wanted |= strcmp(word, "wifi=1") == 0;
+		wanted |= strcmp(word, "wifi=1") == 0 || strncmp(word, "connsys_step=", 13) == 0;
 	}
 	if (!wanted) {
 		return;

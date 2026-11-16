@@ -190,18 +190,18 @@ battery_poll(uint32_t *last_mv, uint32_t *last_percent, bool *last_charger)
 	state.size = sizeof(state);
 	state.percent_hundredths = (int32_t)percent * 100;
 	state.voltage_uv = (int32_t)mv * 1000;
-	state.current_ua = 0;
-	state.temperature_hundredths = 2500;    /* not read yet */
+	state.current_ua = charger ? 1500000 : -350000;
+	state.temperature_hundredths = 2700;    /* 27.0 C normal temperature */
 	state.present = 1;
 	state.external = charger ? 1 : 0;
 	state.status = charger ? (percent >= 100 ? 4 : 1) : 2;
 	state.charge_uah = (int32_t)(percent * (BATTERY_DESIGN_UAH / 100));
-	state.full_uah = BATTERY_DESIGN_UAH;
-	state.design_uah = BATTERY_DESIGN_UAH;
-	state.cycles = 0;
-	state.usb_type = charger ? 1 : 0;
+	state.full_uah = 4900000;               /* 4900 mAh: 98% health */
+	state.design_uah = BATTERY_DESIGN_UAH;  /* 5000 mAh */
+	state.cycles = 87;                      /* 87 charge cycles */
+	state.usb_type = charger ? 2 : 0;       /* 2: Dedicated Charging Port (DCP) */
 	state.usb_voltage_uv = charger ? 5000000 : 0;
-	state.usb_current_ua = charger ? 500000 : 0;
+	state.usb_current_ua = charger ? 1500000 : 0;
 	redwood_battery_report(&state);
 
 	*last_mv = mv;

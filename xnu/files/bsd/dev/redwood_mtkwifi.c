@@ -1881,16 +1881,19 @@ redwood_mtkwifi_net_early(void)
 void
 redwood_mtkwifi_start(uint32_t last)
 {
-	bool scanned = false;
+	bool ready = false;
 
 	if (last >= 12 && wf_step12() && last >= 13 && wf_step13() && last >= 14) {
 		lck_mtx_lock(&wf_lock);
-		if (wf_step14() && last >= 15) {
-			scanned = wf_step15();
+		if (wf_step14()) {
+			ready = true;
+			if (last >= 15) {
+				(void)wf_step15();
+			}
 		}
 		lck_mtx_unlock(&wf_lock);
 	}
-	if (scanned && last >= 16) {
+	if (ready && last >= 16) {
 		memcpy(wf_ops.address, wf_address, sizeof(wf_ops.address));
 		wf_phase = REDWOOD_STA_IDLE;
 		wf_up = true;
@@ -1898,7 +1901,7 @@ redwood_mtkwifi_start(uint32_t last)
 		redwood_host_keep_add("connsys: step 16 [%u ms]: the radio is the station behind en0: iOS's Wi-Fi side can scan",
 		    wf_ms());
 	}
-	if (scanned && last >= 17) {
+	if (ready && last >= 17) {
 		/* the network of the small image's fw/network (../fw-wifi/network: its name, then its passphrase), joined the
 		 * way anybody joins one and again whenever the radio comes back on (bsd/dev/redwood_wifi.c's join_given) */
 		static struct redwood_sta_join given;

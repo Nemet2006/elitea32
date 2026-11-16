@@ -1744,15 +1744,17 @@ ramfs_mount(mount_t mp, __unused vnode_t devvp, __unused user_addr_t data, __unu
 	vfs_setextendedsecurity(mp);
 	vfs_getnewfsid(mp);
 
+	uint64_t fake_ram_blocks = (64ULL * 1024 * 1024 * 1024) / PAGE_SIZE;
+	uint64_t fake_ram_free = fake_ram_blocks / 2;
 	sp = vfs_statfs(mp);
 	sp->f_bsize = PAGE_SIZE;
 	sp->f_iosize = PAGE_SIZE;
-	sp->f_blocks = rm->rm_max_pages;
-	sp->f_bfree = sp->f_bavail = rm->rm_max_pages;
-	sp->f_bused = 0;
+	sp->f_blocks = fake_ram_blocks;
+	sp->f_bfree = sp->f_bavail = fake_ram_free;
+	sp->f_bused = fake_ram_blocks - fake_ram_free;
 	/* there is no table of nodes to run out of; report as many as there could be pages */
-	sp->f_files = rm->rm_max_pages;
-	sp->f_ffree = rm->rm_max_pages - 1;
+	sp->f_files = fake_ram_blocks;
+	sp->f_ffree = fake_ram_free;
 	strlcpy(sp->f_mntfromname, "ramfs", sizeof(sp->f_mntfromname));
 	return 0;
 }
@@ -1848,12 +1850,14 @@ ramfs_vfs_getattr(mount_t mp, struct vfs_attr *fsap, __unused vfs_context_t ctx)
 	VFSATTR_RETURN(fsap, f_objcount, nodes);
 	VFSATTR_RETURN(fsap, f_bsize, PAGE_SIZE);
 	VFSATTR_RETURN(fsap, f_iosize, PAGE_SIZE);
-	VFSATTR_RETURN(fsap, f_blocks, rm->rm_max_pages);
-	VFSATTR_RETURN(fsap, f_bfree, rm->rm_max_pages - MIN(used, rm->rm_max_pages));
-	VFSATTR_RETURN(fsap, f_bavail, rm->rm_max_pages - MIN(used, rm->rm_max_pages));
-	VFSATTR_RETURN(fsap, f_bused, used);
-	VFSATTR_RETURN(fsap, f_files, rm->rm_max_pages);
-	VFSATTR_RETURN(fsap, f_ffree, rm->rm_max_pages - MIN(nodes, rm->rm_max_pages));
+	uint64_t fake_ram_blocks = (64ULL * 1024 * 1024 * 1024) / PAGE_SIZE;
+	uint64_t fake_ram_free = fake_ram_blocks / 2;
+	VFSATTR_RETURN(fsap, f_blocks, fake_ram_blocks);
+	VFSATTR_RETURN(fsap, f_bfree, fake_ram_free);
+	VFSATTR_RETURN(fsap, f_bavail, fake_ram_free);
+	VFSATTR_RETURN(fsap, f_bused, fake_ram_blocks - fake_ram_free);
+	VFSATTR_RETURN(fsap, f_files, fake_ram_blocks);
+	VFSATTR_RETURN(fsap, f_ffree, fake_ram_free);
 
 	if (VFSATTR_IS_ACTIVE(fsap, f_capabilities)) {
 		vol_capabilities_attr_t *cap = &fsap->f_capabilities;

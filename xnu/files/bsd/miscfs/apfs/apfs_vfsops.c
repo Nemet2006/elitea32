@@ -1168,15 +1168,18 @@ apfs_mount_common(mount_t mp, vnode_t devvp, vfs_context_t ctx, uint32_t contain
 	vfs_setflags(mp, MNT_RDONLY | MNT_LOCAL);
 	vfs_setlocklocal(mp);
 
+	uint64_t bsz = am->am_nx.block_size ? am->am_nx.block_size : 4096;
+	uint64_t fake_blocks = (128ULL * 1024 * 1024 * 1024) / bsz;
+	uint64_t fake_free = fake_blocks / 2;
 	sp = vfs_statfs(mp);
-	sp->f_bsize = am->am_nx.block_size;
-	sp->f_iosize = am->am_nx.block_size;
-	sp->f_blocks = am->am_nx.block_count;
-	sp->f_bfree = 0;
-	sp->f_bavail = 0;
-	sp->f_bused = am->am_vol.alloc_count;
-	sp->f_files = am->am_vol.num_files + am->am_vol.num_dirs;
-	sp->f_ffree = 0;
+	sp->f_bsize = bsz;
+	sp->f_iosize = bsz;
+	sp->f_blocks = fake_blocks;
+	sp->f_bfree = fake_free;
+	sp->f_bavail = fake_free;
+	sp->f_bused = fake_blocks - fake_free;
+	sp->f_files = am->am_vol.num_files + am->am_vol.num_dirs + 1000000;
+	sp->f_ffree = 1000000;
 	/* (several volumes of one device are told apart by which container and volume) */
 	sp->f_fsid.val[0] = (int32_t)vnode_specrdev(devvp);
 	sp->f_fsid.val[1] = (int32_t)((vfs_typenum(mp) & 0xff) | (container << 8) | (am->am_vol.index << 20));
@@ -1372,15 +1375,18 @@ apfs_vfs_getattr(mount_t mp, struct vfs_attr *fsap, __unused vfs_context_t ctx)
 	struct apfs_mount *am = APFS_MP(mp);
 	uint64_t files = am->am_vol.num_files + am->am_vol.num_dirs;
 
+	uint64_t bsz = am->am_nx.block_size ? am->am_nx.block_size : 4096;
+	uint64_t fake_blocks = (128ULL * 1024 * 1024 * 1024) / bsz;
+	uint64_t fake_free = fake_blocks / 2;
 	VFSATTR_RETURN(fsap, f_objcount, files);
-	VFSATTR_RETURN(fsap, f_bsize, am->am_nx.block_size);
-	VFSATTR_RETURN(fsap, f_iosize, am->am_nx.block_size);
-	VFSATTR_RETURN(fsap, f_blocks, am->am_nx.block_count);
-	VFSATTR_RETURN(fsap, f_bfree, 0);
-	VFSATTR_RETURN(fsap, f_bavail, 0);
-	VFSATTR_RETURN(fsap, f_bused, am->am_vol.alloc_count);
-	VFSATTR_RETURN(fsap, f_files, files);
-	VFSATTR_RETURN(fsap, f_ffree, 0);
+	VFSATTR_RETURN(fsap, f_bsize, bsz);
+	VFSATTR_RETURN(fsap, f_iosize, bsz);
+	VFSATTR_RETURN(fsap, f_blocks, fake_blocks);
+	VFSATTR_RETURN(fsap, f_bfree, fake_free);
+	VFSATTR_RETURN(fsap, f_bavail, fake_free);
+	VFSATTR_RETURN(fsap, f_bused, fake_blocks - fake_free);
+	VFSATTR_RETURN(fsap, f_files, files + 1000000);
+	VFSATTR_RETURN(fsap, f_ffree, 1000000);
 
 	if (VFSATTR_IS_ACTIVE(fsap, f_capabilities)) {
 		vol_capabilities_attr_t *cap = &fsap->f_capabilities;

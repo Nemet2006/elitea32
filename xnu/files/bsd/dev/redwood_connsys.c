@@ -367,6 +367,8 @@ SYSCTL_STRING(_kern_redwood, OID_AUTO, connsys, CTLFLAG_RD | CTLFLAG_LOCKED, con
 #define CONNSYS_EMI_PHYS        REDWOOD_CONNSYS_EMI_PHYS
 #define CONNSYS_EMI_SIZE        REDWOOD_CONNSYS_EMI_SIZE
 
+extern const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+
 static uint8_t *
 connsys_file(const char *name, uint32_t *size)
 {
@@ -379,7 +381,20 @@ connsys_file(const char *name, uint32_t *size)
 
 	snprintf(path, sizeof(path), "/fw/connsys/%s", name);
 	if (vnode_lookup(path, 0, &vnode, context) != 0) {
-		return NULL;
+		snprintf(path, sizeof(path), "/redwood/fw/connsys/%s", name);
+		if (vnode_lookup(path, 0, &vnode, context) != 0) {
+			uint64_t isize = 0;
+			const uint8_t *img = redwood_image_file("fw/connsys", name, &isize, NULL);
+			if (img != NULL && isize >= 48 && isize <= CONNSYS_EMI_SIZE) {
+				data = kalloc_data(isize, Z_WAITOK);
+				if (data != NULL) {
+					memcpy(data, img, isize);
+					*size = (uint32_t)isize;
+					return data;
+				}
+			}
+			return NULL;
+		}
 	}
 	VATTR_INIT(&attributes);
 	VATTR_WANTED(&attributes, va_data_size);

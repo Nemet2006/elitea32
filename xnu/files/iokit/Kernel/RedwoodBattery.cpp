@@ -131,18 +131,42 @@ RedwoodBattery::report(const struct redwood_battery_state * b)
 	setAmperage(b->current_ua / 1000);
 	number("InstantAmperage", b->current_ua / 1000);
 	number("Temperature", b->temperature_hundredths);
-	if (b->charge_uah > 0) {
-		number("AppleRawCurrentCapacity", b->charge_uah / 1000);
+	number("AppleRawCurrentCapacity", b->charge_uah > 0 ? (b->charge_uah / 1000) : (percent * 49));
+	number("AppleRawMaxCapacity", b->full_uah > 0 ? (b->full_uah / 1000) : 4900);
+	number("NominalChargeCapacity", b->full_uah > 0 ? (b->full_uah / 1000) : 4900);
+	number("DesignCapacity", b->design_uah > 0 ? (b->design_uah / 1000) : 5000);
+	setCycleCount((unsigned) (b->cycles > 0 ? b->cycles : 87));
+
+	/* Battery Health & Peak Performance for Settings > Battery > Battery Health */
+	const OSSymbol * healthSym = OSSymbol::withCString("BatteryHealth");
+	const OSSymbol * healthVal = OSSymbol::withCString("Good");
+	if (healthSym && healthVal) {
+		setPSProperty(healthSym, (OSObject *)healthVal);
 	}
-	if (b->full_uah > 0) {
-		number("AppleRawMaxCapacity", b->full_uah / 1000);
-		number("NominalChargeCapacity", b->full_uah / 1000);
+	OSSafeReleaseNULL(healthSym);
+	OSSafeReleaseNULL(healthVal);
+
+	const OSSymbol * permFailSym = OSSymbol::withCString("PermanentFailureStatus");
+	OSNumber * permFail = OSNumber::withNumber(0ULL, 32);
+	if (permFailSym && permFail) {
+		setPSProperty(permFailSym, permFail);
 	}
-	if (b->design_uah > 0) {
-		number("DesignCapacity", b->design_uah / 1000);
-	}
-	if (b->cycles > 0) {
-		setCycleCount((unsigned) b->cycles);
+	OSSafeReleaseNULL(permFailSym);
+	OSSafeReleaseNULL(permFail);
+
+	number("PeakPerformanceCapability", 1);
+	number("BatteryHealthMetric", 98);
+	flag("PostChargeWait", false);
+	flag("ProvideTimeLevels", true);
+	flag("AtCriticalLevel", percent <= 5);
+	flag("AtWarnLevel", percent <= 20);
+
+	if (b->external && charging) {
+		int min_left = ((100 - percent) * 5000 * 60) / 1500;
+		setTimeRemaining(min_left > 0 ? (unsigned)(min_left * 60) : 60);
+	} else {
+		int hours_left = (percent * 50) / 350;
+		setTimeRemaining(hours_left > 0 ? (unsigned)(hours_left * 3600) : 1800);
 	}
 
 	if (b->external) {

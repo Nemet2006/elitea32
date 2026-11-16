@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -432,6 +434,259 @@ personas_are_supported(__unused id self, __unused SEL selector)
 	return NO;
 }
 
+/* =========================================================================
+ * Keyboard Alignment & "123" Keyplane Switch Fixes for HakiOS (iOS 16.5)
+ * ========================================================================= */
+
+static void (*orig_layout_touchDownWithKey)(id self, SEL _cmd, id key, id touchInfo, CGPoint pt, id execCtx);
+static void (*orig_layout_touchUp)(id self, SEL _cmd, id touch, id execCtx);
+static void (*orig_layout_setFrame)(id self, SEL _cmd, CGRect frame);
+static void (*orig_layout_didMoveToWindow)(id self, SEL _cmd);
+static void (*orig_keyboard_setFrame)(id self, SEL _cmd, CGRect frame);
+static void (*orig_impl_showKeyboard)(id self, SEL _cmd);
+
+static void
+do_switch_keyplane(id layoutStar, id key)
+{
+	if (layoutStar == nil) return;
+
+	SEL s_keyplaneName = sel_registerName("keyplaneName");
+	SEL s_keyboard = sel_registerName("keyboard");
+	SEL s_subtrees = sel_registerName("subtrees");
+	SEL s_name = sel_registerName("name");
+	SEL s_switchKeyplane = sel_registerName("switchKeyplane:");
+	SEL s_setKeyplaneName = sel_registerName("setKeyplaneName:");
+	SEL s_activeInstance = sel_registerName("activeInstance");
+	SEL s_updateLayout = sel_registerName("updateLayout");
+	SEL s_setNeedsLayout = sel_registerName("setNeedsLayout");
+	SEL s_layoutIfNeeded = sel_registerName("layoutIfNeeded");
+
+	id (*msg_id)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+	void (*msg_void_id)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+	void (*msg_void)(id, SEL) = (void (*)(id, SEL))objc_msgSend;
+
+	NSString *currName = msg_id(layoutStar, s_keyplaneName);
+	id kb = msg_id(layoutStar, s_keyboard);
+	NSArray *subtrees = kb ? msg_id(kb, s_subtrees) : nil;
+
+	char logbuf[256];
+	snprintf(logbuf, sizeof(logbuf), "redwood: keyboard: switch requested from '%s', subtrees: %lu\n",
+	    currName ? [currName UTF8String] : "(nil)",
+	    subtrees ? (unsigned long)[subtrees count] : 0);
+	say(logbuf, strlen(logbuf));
+
+	BOOL isNumbers = NO;
+	if (currName) {
+		NSString *lower = [currName lowercaseString];
+		if ([lower containsString:@"number"] || [lower containsString:@"punct"] || [lower containsString:@"alternate"]) {
+			isNumbers = YES;
+		}
+	}
+
+	NSString *target = nil;
+	if (subtrees && [subtrees count] > 0) {
+		for (id kp in subtrees) {
+			NSString *kpName = msg_id(kp, s_name);
+			if (!kpName) continue;
+			NSString *kplow = [kpName lowercaseString];
+			if (!isNumbers) {
+				/* We want numbers / punctuation */
+				if ([kplow containsString:@"number"] || [kplow containsString:@"punct"]) {
+					target = kpName;
+					break;
+				}
+			} else {
+				/* We want letters / qwerty */
+				if ([kplow containsString:@"letter"] || [kplow containsString:@"qwerty"] || [kplow containsString:@"latin"]) {
+					target = kpName;
+					break;
+				}
+			}
+		}
+		if (!target) {
+			for (id kp in subtrees) {
+				NSString *kpName = msg_id(kp, s_name);
+				if (kpName && ![kpName isEqualToString:currName]) {
+					target = kpName;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!target) {
+		target = isNumbers ? @"Letters" : @"Numbers-And-Punctuation";
+	}
+
+	snprintf(logbuf, sizeof(logbuf), "redwood: keyboard: switching to keyplane '%s'\n", [target UTF8String]);
+	say(logbuf, strlen(logbuf));
+
+	if ([layoutStar respondsToSelector:s_switchKeyplane]) {
+		msg_void_id(layoutStar, s_switchKeyplane, target);
+	} else if ([layoutStar respondsToSelector:s_setKeyplaneName]) {
+		msg_void_id(layoutStar, s_setKeyplaneName, target);
+	}
+
+	Class implCls = objc_getClass("UIKeyboardImpl");
+	if (implCls) {
+		id impl = msg_id((id)implCls, s_activeInstance);
+		if (impl && [impl respondsToSelector:s_updateLayout]) {
+			msg_void(impl, s_updateLayout);
+		}
+	}
+	if ([layoutStar respondsToSelector:s_setNeedsLayout]) {
+		msg_void(layoutStar, s_setNeedsLayout);
+	}
+	if ([layoutStar respondsToSelector:s_layoutIfNeeded]) {
+		msg_void(layoutStar, s_layoutIfNeeded);
+	}
+}
+
+static void
+my_layout_touchDownWithKey(id self, SEL _cmd, id key, id touchInfo, CGPoint pt, id execCtx)
+{
+	if (orig_layout_touchDownWithKey) {
+		orig_layout_touchDownWithKey(self, _cmd, key, touchInfo, pt, execCtx);
+	}
+
+	BOOL isSwitch = NO;
+	if (key) {
+		SEL s_inter = sel_registerName("interactionType");
+		SEL s_disp = sel_registerName("displayString");
+		SEL s_rep = sel_registerName("representedString");
+		SEL s_name = sel_registerName("name");
+
+		long long (*msg_int)(id, SEL) = (long long (*)(id, SEL))objc_msgSend;
+		id (*msg_id)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+
+		long long inter = [key respondsToSelector:s_inter] ? msg_int(key, s_inter) : -1;
+		NSString *disp = [key respondsToSelector:s_disp] ? msg_id(key, s_disp) : nil;
+		NSString *rep = [key respondsToSelector:s_rep] ? msg_id(key, s_rep) : nil;
+		NSString *kname = [key respondsToSelector:s_name] ? msg_id(key, s_name) : nil;
+
+		if (inter == 5) {
+			isSwitch = YES;
+		} else if (disp && ([disp isEqualToString:@"123"] || [disp isEqualToString:@"ABC"] || [disp isEqualToString:@".?123"] || [disp isEqualToString:@"#+="])) {
+			isSwitch = YES;
+		} else if (rep && ([rep containsString:@"123"] || [rep containsString:@"Numbers"] || [rep containsString:@"Letters"])) {
+			isSwitch = YES;
+		} else if (kname && ([kname containsString:@"More"] || [kname containsString:@"Numbers"] || [kname containsString:@"Switch"])) {
+			isSwitch = YES;
+		}
+	}
+
+	CGRect b = [(UIView *)self bounds];
+	/* Bottom-left corner check: x in [0 .. 110], y >= height - 120 */
+	if (pt.x >= 0.0 && pt.x <= 110.0 && pt.y >= (b.size.height > 120 ? b.size.height - 120.0 : 0)) {
+		isSwitch = YES;
+	}
+
+	if (isSwitch) {
+		do_switch_keyplane(self, key);
+	}
+}
+
+static void
+my_layout_touchUp(id self, SEL _cmd, id touch, id execCtx)
+{
+	if (orig_layout_touchUp) {
+		orig_layout_touchUp(self, _cmd, touch, execCtx);
+	}
+
+	if (touch && [touch respondsToSelector:@selector(locationInView:)]) {
+		CGPoint pt = [(UITouch *)touch locationInView:(UIView *)self];
+		CGRect b = [(UIView *)self bounds];
+		if (pt.x >= 0.0 && pt.x <= 110.0 && pt.y >= (b.size.height > 120 ? b.size.height - 120.0 : 0)) {
+			char msg[128];
+			snprintf(msg, sizeof(msg), "redwood: keyboard: touchUp in switch rect (%.1f, %.1f)\n", pt.x, pt.y);
+			say(msg, strlen(msg));
+		}
+	}
+}
+
+static void
+my_keyboard_setFrame(id self, SEL _cmd, CGRect frame)
+{
+	if (frame.size.width > 0 && frame.size.width != 375.0) {
+		frame.size.width = 375.0;
+	}
+	if (frame.origin.x != 0.0) {
+		frame.origin.x = 0.0;
+	}
+	if (orig_keyboard_setFrame) {
+		orig_keyboard_setFrame(self, _cmd, frame);
+	}
+	if ([self respondsToSelector:@selector(setNeedsLayout)]) {
+		[(UIView *)self setNeedsLayout];
+		[(UIView *)self layoutIfNeeded];
+	}
+}
+
+static void
+my_layout_setFrame(id self, SEL _cmd, CGRect frame)
+{
+	if (frame.size.width > 0 && frame.size.width != 375.0) {
+		frame.size.width = 375.0;
+	}
+	if (frame.origin.x != 0.0) {
+		frame.origin.x = 0.0;
+	}
+	if (orig_layout_setFrame) {
+		orig_layout_setFrame(self, _cmd, frame);
+	}
+	if ([self respondsToSelector:@selector(setNeedsLayout)]) {
+		[(UIView *)self setNeedsLayout];
+		[(UIView *)self layoutIfNeeded];
+	}
+}
+
+static void
+my_layout_didMoveToWindow(id self, SEL _cmd)
+{
+	if (orig_layout_didMoveToWindow) {
+		orig_layout_didMoveToWindow(self, _cmd);
+	}
+	CGRect b = [(UIView *)self bounds];
+	if (b.size.width > 0 && b.size.width != 375.0) {
+		b.size.width = 375.0;
+		b.origin.x = 0.0;
+		[(UIView *)self setBounds:b];
+	}
+	[(UIView *)self setNeedsLayout];
+	[(UIView *)self layoutIfNeeded];
+}
+
+static void
+my_impl_showKeyboard(id self, SEL _cmd)
+{
+	if (orig_impl_showKeyboard) {
+		orig_impl_showKeyboard(self, _cmd);
+	}
+	if ([self respondsToSelector:@selector(updateLayout)]) {
+		[(id)self performSelector:@selector(updateLayout)];
+	}
+	say("redwood: keyboard: showKeyboard hooked -> updateLayout triggered\n", 60);
+}
+
+static void
+install_keyboard_hooks(void)
+{
+	watch("UIKeyboardLayoutStar", "touchDownWithKey:withTouchInfo:atPoint:executionContext:",
+	    (IMP)my_layout_touchDownWithKey, &orig_layout_touchDownWithKey);
+	watch("UIKeyboardLayoutStar", "touchUp:executionContext:",
+	    (IMP)my_layout_touchUp, &orig_layout_touchUp);
+	watch("UIKeyboardLayoutStar", "setFrame:",
+	    (IMP)my_layout_setFrame, &orig_layout_setFrame);
+	watch("UIKeyboardLayoutStar", "didMoveToWindow",
+	    (IMP)my_layout_didMoveToWindow, &orig_layout_didMoveToWindow);
+	watch("UIKeyboard", "setFrame:",
+	    (IMP)my_keyboard_setFrame, &orig_keyboard_setFrame);
+	watch("UIKeyboardImpl", "showKeyboard",
+	    (IMP)my_impl_showKeyboard, &orig_impl_showKeyboard);
+
+	say("redwood: keyboard hooks installed successfully\n", 45);
+}
+
 __attribute__((constructor))
 static void
 redwood_app_init(void)
@@ -484,6 +739,7 @@ redwood_app_init(void)
 	}
 	static IMP orig_corner_radius;
 	watch("UIScreen", "_displayCornerRadius", (IMP)app_display_corner_radius, &orig_corner_radius);
+	install_keyboard_hooks();
 	watch("UIApplication", "beginBackgroundTaskWithExpirationHandler:", (IMP)watched_begin_task, &begin_task);
 	/*
 	 * NSURLSessionTask alone: its subclasses inherit the very same method, and watching it twice
